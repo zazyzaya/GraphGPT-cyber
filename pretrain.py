@@ -11,7 +11,7 @@ DEVICE = 2
 WARMUP_T = 10 ** 8 # Tokens
 TOTAL_T = 10 ** 9
 
-MINI_BS = 512
+MINI_BS =256
 BS = 1024
 
 class Scheduler(LRScheduler):
@@ -49,7 +49,7 @@ def train(g: SparseGraphSampler, model: MaskedAttentionEmb):
     processed_tokens = 0
 
     e = 0
-    while True:
+    while processed_tokens < TOTAL_T:
         for i,mb in enumerate(g):
             st = time.time()
             loss, tokens = minibatch(mb, model)
@@ -74,12 +74,29 @@ def train(g: SparseGraphSampler, model: MaskedAttentionEmb):
                 print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
 
                 updates += 1
+                steps = 0
 
-            if updates % 100 == 0:
-                torch.save(
-                    (model.args, model.kwargs, model.state_dict()),
-                    'masked_attn.pt'
-                )
+                if processed_tokens >= TOTAL_T:
+                    break
+
+                if updates % 100 == 0:
+                    torch.save(
+                        (model.args, model.kwargs, model.state_dict()),
+                        'masked_attn.pt'
+                    )
+
+                if updates % 10_000 == 0:
+                    torch.save(
+                        (model.args, model.kwargs, model.state_dict()),
+                        f'masked_attn-{updates//10_000}.pt'
+                    )
+        e += 1
+
+    torch.save(
+        (model.args, model.kwargs, model.state_dict()),
+        'masked_attn.pt'
+    )
+
 
 
 if __name__ == '__main__':

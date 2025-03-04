@@ -58,6 +58,27 @@ class MaskedAttentionEmb(nn.Module):
         self.out = nn.Linear(hidden_size, num_tokens, device=self.device)
         self.criterion = nn.CrossEntropyLoss()
 
+    def embedding(self, seq, offset=True):
+        # Generate NTPs
+        tokens = self.proj(self.embed(seq))
+        pe = self.pe(tokens)
+        tokens = tokens + pe
+
+        if offset:
+            tokens = tokens[:-1]
+        else:
+            tokens = tokens
+
+        mask = nn.Transformer.generate_square_subsequent_mask(tokens.size(0)-1)
+        preds = self.transformer.forward(
+            src=tokens,
+            tgt=tokens,
+            tgt_is_causal=True,
+            tgt_mask=mask
+        )
+
+        return preds
+
     def forward(self, seq, targets):
         '''
         Expects S x B list of Eulerian walks
@@ -65,19 +86,7 @@ class MaskedAttentionEmb(nn.Module):
         seq = seq.to(self.device)
         targets = targets.to(self.device)
 
-        # Generate NTPs
-        tokens = self.proj(self.embed(seq))
-        pe = self.pe(tokens)
-        tokens = tokens + pe
-
-        mask = nn.Transformer.generate_square_subsequent_mask(tokens.size(0)-1)
-        preds = self.transformer.forward(
-            src=tokens[:-1],
-            tgt=tokens[:-1],
-            tgt_is_causal=True,
-            tgt_mask=mask
-        )
-
+        preds = self.embedding(seq)
         preds = self.out(preds)
         loss = self.criterion.forward(
             preds[targets[1:]], seq[1:][targets[1:]]

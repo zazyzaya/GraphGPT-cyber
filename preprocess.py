@@ -84,6 +84,7 @@ def to_torch(partition='tr'):
     nid = dict()
     users = dict(); computers = dict(); other = dict()
     edges = defaultdict(lambda : 0)
+    labels = defaultdict(lambda : 0)
 
     def get_or_add(v, d):
         if (nid := d.get(v)) is None:
@@ -105,7 +106,12 @@ def to_torch(partition='tr'):
     line = f.readline()
     prog = tqdm()
     while line:
-        src,dst,_ = line.split(',', 2)
+        if partition == 'tr':
+            src,dst,_ = line.split(',', 2)
+        else:
+            tokens = line.split(',')
+            src = tokens[0]; dst = tokens[1]
+            label = int(tokens[-1])
 
         # Ignore anonymous login
         if src.startswith("ANON"):
@@ -116,6 +122,9 @@ def to_torch(partition='tr'):
         dst = sort_node(dst)
 
         edges[(src,dst)] += 1
+
+        if partition != 'tr':
+            labels[(src,dst)] = max(labels[(src,dst)], label)
 
         prog.update()
         line = f.readline()
@@ -132,20 +141,29 @@ def to_torch(partition='tr'):
         else:
             x[v] = torch.tensor([2, other[k]])
 
-    src,dst,weight = [],[],[]
+    src,dst,weight,label = [],[],[],[]
     for (s,d),v in tqdm(edges.items()):
         src.append(s)
         dst.append(d)
         weight.append(v)
 
+        if partition != 'tr':
+            label.append(labels[(s,d)])
+
     ei = torch.tensor([src,dst], dtype=torch.long)
     ew = torch.tensor(weight)
-    ei, ew = to_undirected(ei, ew)
+
+    if partition == 'tr':
+        ei, ew = to_undirected(ei, ew)
+    else:
+        label = torch.tensor(label)
 
     return Data(
-        x=x, edge_index=ei, edge_attr=ew, num_nodes=x.size(0)
+        x=x, edge_index=ei,
+        edge_attr=ew, num_nodes=x.size(0),
+        label=label
     )
 
 if __name__ == '__main__':
-    g = to_torch()
-    torch.save(g, 'data/lanl_tr.pt')
+    g = to_torch('te')
+    torch.save(g, 'data/lanl_te.pt')

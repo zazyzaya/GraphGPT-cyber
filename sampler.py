@@ -1,6 +1,3 @@
-import random
-from typing import Union
-
 import torch
 from torch import Tensor
 from torch_geometric.data import Data
@@ -11,7 +8,7 @@ class SparseGraphSampler():
     Stripped down version of ShaDowKHopSeqMapDataset from
     https://github.com/alibaba/graph-gpt/blob/main/src/data/dataset_map.py#L214
     '''
-    def __init__(self, data: Data, adj_t: SparseTensor=None, depth=1, neighbors=15, reindex=False, batch_size=64):
+    def __init__(self, data: Data, adj_t: SparseTensor=None, depth=1, neighbors=15, reindex=False, batch_size=64, mode='pretrain'):
         self.data = data
         self.x = data.x
 
@@ -36,6 +33,7 @@ class SparseGraphSampler():
         self.neighbors = neighbors
         self.reindex = reindex
         self.batch_size = batch_size
+        self.is_finetuning = mode == 'finetune'
 
     def __getitem__(self, index):
         rowptr, col, _ = self.adj_t.csr()
@@ -60,6 +58,8 @@ class SparseGraphSampler():
         root_n_id_dst = (n_id_unique == index[1]).nonzero(as_tuple=True)[0]
         root_n_id = torch.tensor([root_n_id_src, root_n_id_dst], dtype=torch.int64)
 
+        if self.is_finetuning:
+            edge_index = self._remove_target_edge(root_n_id_src, root_n_id_dst, edge_index)
 
         data = Data(num_nodes=n_id_unique.numel())
         data.root_n_id = root_n_id
@@ -70,11 +70,36 @@ class SparseGraphSampler():
 
         return data
 
+    def sample(self, eidx):
+        '''
+        Expects B x 2 batch of edges
+        '''
+        datas = []
+        for e in eidx:
+            data = self.__getitem__(e)
+            data.edge_idx = e
+            datas.append(data)
+
+        return datas
+
     def __iter__(self):
         idx = torch.randperm(self.data.edge_index.size(1))
         idx = idx.split(self.batch_size)
 
         for batch in idx:
             eidx = self.data.edge_index[:, batch].T
-            datas = [self.__getitem__(e) for e in eidx]
-            yield datas
+            data = self.sample(eidx)
+            yield data
+
+    def __len__(self):
+        return self.data.edge_index.size(1)
+
+    def _remove_target_edge(self, src, dst, ei):
+        to_remove = (ei[0] == src).logical_and(ei[1] == dst)
+
+        # Bidirectional
+        to_remove = to_remove.logical_or(
+            (ei[1] == src).logical_and(ei[0] == dst)
+        )
+
+        return ei[:, ~to_remove]
