@@ -51,46 +51,43 @@ def train(g: SparseGraphSampler, model: BERT):
     e = 0
     while processed_tokens < TOTAL_T:
         for i,mb in enumerate(g):
+            st = time.time()
+            opt.zero_grad()
             loss, tokens = minibatch(mb, model)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+            opt.step()
+            sched.step()
+            en = time.time()
+
             processed_tokens += tokens
-            steps += 1
+            updates += 1
 
-            if steps * MINI_BS >= BS:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-                opt.step()
-                sched.step()
-                opt.zero_grad()
+            # Log epoch
+            with open('bertlog.txt', 'a') as f:
+                f.write(f'{loss},{updates},{processed_tokens}\n')
 
-                en = time.time()
+            lr = sched.get_last_lr()[0]
+            sched.last_epoch = processed_tokens
 
-                # Log epoch
-                with open('bertlog.txt', 'a') as f:
-                    f.write(f'{loss},{updates},{processed_tokens}\n')
+            print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
+            del loss
 
-                lr = sched.get_last_lr()[0]
-                sched.last_epoch = processed_tokens
+            if processed_tokens >= TOTAL_T:
+                break
 
-                print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
+            if updates % 100 == 0:
+                torch.save(
+                    (model.args, model.kwargs, model.state_dict()),
+                    'bert.pt'
+                )
 
-                updates += 1
-                steps = 0
+            if updates % 10_000 == 0:
+                torch.save(
+                    (model.args, model.kwargs, model.state_dict()),
+                    f'bert-{updates//10_000}.pt'
+                )
 
-                if processed_tokens >= TOTAL_T:
-                    break
 
-                if updates % 100 == 0:
-                    torch.save(
-                        (model.args, model.kwargs, model.state_dict()),
-                        'bert.pt'
-                    )
-
-                if updates % 10_000 == 0:
-                    torch.save(
-                        (model.args, model.kwargs, model.state_dict()),
-                        f'bert-{updates//10_000}.pt'
-                    )
-
-                st = time.time()
         e += 1
 
     torch.save(
@@ -102,7 +99,7 @@ def train(g: SparseGraphSampler, model: BERT):
 
 if __name__ == '__main__':
     g = torch.load('data/lanl_tr.pt', weights_only=False)
-    g = SparseGraphSampler(g, batch_size=MINI_BS, neighbors=25)
+    g = SparseGraphSampler(g, batch_size=BS, neighbors=20)
     num_tokens = g.x.max().long() + 3 + 1
     t = Tokenizer(num_tokens, 3)
 

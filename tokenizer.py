@@ -1,4 +1,5 @@
-from random import choice
+from multiprocessing import Pool
+from joblib import Parallel, delayed
 
 import torch
 import networkx as nx
@@ -23,6 +24,8 @@ class Tokenizer():
             ei: edge index
         '''
         g = to_networkx(data, to_undirected=True)
+
+        # Abt 0.001s on average
         if not nx.is_eulerian(g):
             ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
             ccs = [nx.eulerize(cc) for cc in ccs]
@@ -73,6 +76,7 @@ class Tokenizer():
             target_ids.append(target)
 
             target_ids.append(torch.tensor([False]))
+
             if i == len(ccs)-1:
                 seqs.append(torch.tensor([self.EOS]))
             else:
@@ -85,7 +89,12 @@ class Tokenizer():
         return seqs, tgt_seqs, mask
 
     def tokenize_and_mask(self, subgraphs):
-        seqs,tgts,masks = zip(*[self._tokenize_and_mask_one(sg) for sg in subgraphs])
+        out = Parallel(prefer='processes', n_jobs=16)(
+            delayed(self._tokenize_and_mask_one)(sg) for sg in subgraphs
+        )
+
+        seqs,tgts,masks = zip(*out)
+        #seqs,tgts,masks = zip(*[self._tokenize_and_mask_one(sg) for sg in subgraphs])
         out_seqs = torch.full(
             (len(seqs), max([s.size(0) for s in seqs])),
             self.PAD
