@@ -56,6 +56,7 @@ def evaluate(model, tr, to_eval):
     idxs = can_eval.split(EVAL_BS)
 
     preds = torch.zeros(to_eval.edge_index.size(1))
+    preds_one = torch.ones(to_eval.edge_index.size(1))
     for idx in tqdm(idxs, desc='Evaluating'):
         edges = to_eval.edge_index[:, idx]
         data = tr.sample(edges.T)
@@ -63,6 +64,7 @@ def evaluate(model, tr, to_eval):
 
         pred = model.predict(walks,masks).to('cpu')
         preds[idx] = pred.squeeze()
+        preds_one[idx] = pred.squeeze()
 
     labels = to_eval.label
     weights = to_eval.edge_attr
@@ -73,6 +75,12 @@ def evaluate(model, tr, to_eval):
     ap = ap_score(
         labels, preds, sample_weight=weights
     )
+    auc_sus = auc_score(
+        labels, preds_one, sample_weight=weights
+    )
+    ap_sus = ap_score(
+        labels, preds_one, sample_weight=weights
+    )
     auc_trunc = auc_score(
         labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
     )
@@ -80,7 +88,7 @@ def evaluate(model, tr, to_eval):
         labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
     )
 
-    return auc,ap, auc_trunc,ap_trunc
+    return auc,ap, auc_trunc,ap_trunc, auc_sus,ap_sus
 
 def train(tr,va,te, model: GraphGPT):
     opt = AdamW(
@@ -145,15 +153,16 @@ def train(tr,va,te, model: GraphGPT):
 
                 st = time.time()
 
-        t_auc, t_ap, t_auc_trunc, t_ap_trunc = evaluate(model, tr, te)
+        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(model, tr, te)
         print('#'*20)
         print(f'TEST SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):   {t_auc:0.4f}, AP: {t_ap:0.4f}")
-        print(f"AUC (ignore missing): {t_auc_trunc:0.4f}, AP: {t_ap_trunc:0.4f}")
+        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
+        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
+        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
 
         with open('ft_results.txt', 'a') as f:
-            f.write(f'{e+1},{t_auc},{t_ap},{t_auc_trunc},{t_ap_trunc}\n')
+            f.write(f'{e+1},{auc},{ap},{auc_trunc},{ap_trunc},{auc_sus},{ap_sus},{loss}\n')
 
         torch.save(
             model.state_dict(),
@@ -181,5 +190,5 @@ if __name__ == '__main__':
     num_tokens = tr.x.max().long() + 3 + 1
     t = Tokenizer(num_tokens, 3)
 
-    model = GraphGPT('pretrained/mini_15_neighbors.pt', device=DEVICE)
+    model = GraphGPT('masked_attn.pt', device=DEVICE)
     train(tr,va,te,model)

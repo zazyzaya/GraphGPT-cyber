@@ -24,7 +24,7 @@ class GraphGPT(nn.Module):
         '''
         seqs = seqs.to(self.device)
 
-        embs = self.fm.embedding(seqs, offset=False)
+        embs = self.fm.embed(seqs, offset=False)
         embs = embs[targets, torch.arange(embs.size(1))] # Target Tokens x B x d
         embs = embs.transpose(0,1) # B x Target tokens x d
         embs = embs.reshape(embs.size(0), -1) # B x Target Tokens * d
