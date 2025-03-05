@@ -24,7 +24,7 @@ class GraphGPT(nn.Module):
         '''
         seqs = seqs.to(self.device)
 
-        embs = self.fm.embed(seqs, offset=False)
+        embs = self.fm.embedding(seqs, offset=False)
         embs = embs[targets, torch.arange(embs.size(1))] # Target Tokens x B x d
         embs = embs.transpose(0,1) # B x Target tokens x d
         embs = embs.reshape(embs.size(0), -1) # B x Target Tokens * d
@@ -38,4 +38,19 @@ class GraphGPT(nn.Module):
         labels = labels.to(self.device)
         loss = self.criterion(preds, labels)
 
+        return loss
+
+    def simple_predict(self, seqs):
+        seqs = seqs.to(self.device)
+        embs = self.fm.embedding(seqs, offset=False) # 4 x B x d
+        embs = embs.transpose(0,1)               # B x 4 x d
+        embs = embs.reshape(embs.size(0), -1)    # B x 4*d
+
+        pred = self.out(embs)
+        return pred
+
+    def simple_forward(self, seqs, labels):
+        preds = self.simple_predict(seqs)
+        labels = labels.to(self.device)
+        loss = self.criterion(preds, labels)
         return loss

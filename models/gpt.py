@@ -40,7 +40,7 @@ class MaskedAttentionEmb(nn.Module):
             emb_dim=emb_dim
         )
 
-        self.embedding = nn.Embedding(num_tokens, emb_dim, device=self.device)
+        self.embed = nn.Embedding(num_tokens, emb_dim, device=self.device)
         self.proj = nn.Sequential(
             nn.Linear(emb_dim, hidden_size, device=self.device),
             nn.GELU()
@@ -58,9 +58,9 @@ class MaskedAttentionEmb(nn.Module):
         self.out = nn.Linear(hidden_size, num_tokens, device=self.device)
         self.criterion = nn.CrossEntropyLoss()
 
-    def embed(self, seq, offset=True):
+    def embedding(self, seq, offset=True):
         # Generate NTPs
-        tokens = self.proj(self.embedding(seq))
+        tokens = self.proj(self.embed(seq))
         pe = self.pe(tokens)
         tokens = tokens + pe
 
@@ -86,7 +86,7 @@ class MaskedAttentionEmb(nn.Module):
         seq = seq.to(self.device)
         targets = targets.to(self.device)
 
-        preds = self.embed(seq)
+        preds = self.embedding(seq)
         preds = self.out(preds)
         loss = self.criterion.forward(
             preds[targets[1:]], seq[1:][targets[1:]]

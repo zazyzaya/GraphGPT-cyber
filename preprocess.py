@@ -17,7 +17,7 @@ def parse_auth():
     line = f.readline()
 
     TS = 0
-    SRC = 1
+    SRC = 3
     DST = 4
     AUTH_TYPE = 5
     SUCCESS = 8
@@ -31,7 +31,7 @@ def parse_auth():
     redlog = gzip.open(f'{HOME_DIR}/redteam.txt.gz', 'rt')
     next_red = redlog.readline().split(',')
 
-    out_f = open(f'{HOME_DIR}/processed/auth_tr.txt', 'w+')
+    out_f = open(f'{HOME_DIR}/processed/auth_cc_tr.txt', 'w+')
     opened_test = False
     prog = tqdm(total=TOTAL_EVENTS)
 
@@ -44,9 +44,9 @@ def parse_auth():
         if tokens[TS] == str(TEST_START) and not opened_test:
             opened_test = True
             out_f.close()
-            out_f = open(f'{HOME_DIR}/processed/auth_te.txt', 'w+')
+            out_f = open(f'{HOME_DIR}/processed/auth_cc_te.txt', 'w+')
 
-        src = parse_src(tokens[SRC])
+        src = tokens[SRC]
 
         if not opened_test:
             out_f.write(
@@ -80,7 +80,7 @@ def parse_auth():
     prog.close()
 
 def to_torch(partition='tr'):
-    f = open(f'{HOME_DIR}/processed/auth_{partition}.txt', 'r')
+    f = open(f'{HOME_DIR}/processed/auth_cc_{partition}.txt', 'r')
     nid = dict()
     users = dict(); computers = dict(); other = dict()
     edges = defaultdict(lambda : 0)
@@ -165,5 +165,8 @@ def to_torch(partition='tr'):
     )
 
 if __name__ == '__main__':
+    parse_auth()
+    g = to_torch('tr')
+    torch.save(g, 'data/lanl_cc_tr.pt')
     g = to_torch('te')
-    torch.save(g, 'data/lanl_te.pt')
+    torch.save(g, 'data/lanl_cc_te.pt')

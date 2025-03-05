@@ -10,7 +10,7 @@ from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import LRScheduler, CosineAnnealingLR
 from tqdm import tqdm
 
-from models.ft_gpt import GraphGPT
+from models.ft_bert import FT_BERT
 from sampler import SparseGraphSampler
 from tokenizer import Tokenizer
 
@@ -45,12 +45,6 @@ class Scheduler(LRScheduler):
                     for group in self.optimizer.param_groups]
 
 
-def minibatch(mb, model: GraphGPT, labels):
-    walks,masks = t.lp_tokenize(mb)
-    loss = model(walks, masks, labels)
-    loss.backward()
-
-    return loss
 
 @torch.no_grad()
 def evaluate(model, tr, to_eval):
@@ -67,7 +61,7 @@ def evaluate(model, tr, to_eval):
         #walks,masks = t.lp_tokenize(data)
         walks = t.simple_lp_tokenize(tr.x, edges)
 
-        pred = model.simple_predict(walks).to('cpu')
+        pred = model.predict(walks).to('cpu')
         preds[idx] = pred.squeeze()
         preds_one[idx] = pred.squeeze()
 
@@ -95,9 +89,9 @@ def evaluate(model, tr, to_eval):
 
     return auc,ap, auc_trunc,ap_trunc, auc_sus,ap_sus
 
-def simple_train(tr,va,te, model: GraphGPT):
+def simple_train(tr,va,te, model: FT_BERT):
     opt = AdamW(
-        model.parameters(), lr=1e-2,
+        model.parameters(), lr=1e-3,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
     )
 
@@ -135,7 +129,7 @@ def simple_train(tr,va,te, model: GraphGPT):
             st = time.time()
             opt.zero_grad()
             walks = t.simple_lp_tokenize(tr.x, mb)
-            loss = model.simple_forward(walks, labels)
+            loss = model.forward(walks, labels)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             opt.step()
@@ -199,91 +193,8 @@ def simple_train(tr,va,te, model: GraphGPT):
         print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
         print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
 
-def train(tr,va,te, model: GraphGPT):
-    opt = AdamW(
-        model.parameters(), lr=6e-4,
-        betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
-    )
 
-    updates_per_epoch = len(tr) / BS
-    warmup_stop = int(updates_per_epoch * WARMUP_E)
-    total_steps = int(updates_per_epoch * EPOCHS)
-
-    print(updates_per_epoch)
-
-    sched = Scheduler(opt, warmup_stop, total_steps)
-
-    with open('ft_log.txt', 'w+') as f:
-        pass
-
-    with open('ft_results.txt', 'w+') as f:
-            f.write(f'epoch,auc,ap\n')
-
-    updates = 0
-    opt.zero_grad()
-    st = time.time()
-    steps = 0
-
-    e = 0
-    for e in range(EPOCHS):
-        for pos_mb in tr:
-            # Negative sample non-edges
-            neg_mb = tr.sample(torch.randint(0, tr.x.size(0), (MINI_BS, 2)))
-            labels = torch.zeros((len(pos_mb) + len(neg_mb), 1))
-            labels[len(pos_mb):] = 1
-            mb = pos_mb + neg_mb
-
-            loss = minibatch(mb, model, labels)
-            steps += 1
-
-            if steps * MINI_BS >= BS:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-                opt.step()
-                sched.step()
-                opt.zero_grad()
-
-                en = time.time()
-
-                # Log epoch
-                with open('ft_log.txt', 'a') as f:
-                    f.write(f'{loss},{updates}\n')
-
-                lr = sched.get_last_lr()[0]
-                print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, {en-st:0.2f}s)')
-
-                updates += 1
-                steps = 0
-
-                if updates % 100 == 0:
-                    torch.save(
-                         model.state_dict(),
-                        'finetune.pt'
-                    )
-
-                st = time.time()
-
-
-
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(model, tr, te)
-        print('#'*20)
-        print(f'TEST SCORES')
-        print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
-
-
-
-        with open('ft_results.txt', 'a') as f:
-            f.write(f'{e+1},{auc},{ap},{auc_trunc},{ap_trunc},{auc_sus},{ap_sus},{loss}\n')
-
-        torch.save(
-            model.state_dict(),
-            'finetune.pt'
-        )
-
-
-def add_fake_data(data, percent=0.1):
+def add_fake_data(data, percent=1):
     real = data.label == 0
     to_fake = int(real.sum() * percent)
     neg = torch.randint(0, data.x.size(0), (2,to_fake))
@@ -320,5 +231,5 @@ if __name__ == '__main__':
     num_tokens = tr.x.max().long() + 3 + 1
     t = Tokenizer(num_tokens, 3)
 
-    model = GraphGPT('pretrained/gpt/mini_15_neighbors.pt', device=DEVICE)
+    model = FT_BERT('bert.pt', device=DEVICE)
     simple_train(tr,va,te,model)

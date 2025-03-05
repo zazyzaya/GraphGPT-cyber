@@ -5,7 +5,7 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from models.bert import BERT
 from sampler import SparseGraphSampler
-from tokenizer import Tokenizer
+from alibaba_tokenizer import Tokenizer
 
 DEVICE = 2
 WARMUP_T = 10 ** 8 # Tokens
@@ -30,7 +30,8 @@ def minibatch(mb, model: BERT):
     loss = model(walks, masks, targets)
     loss.backward()
 
-    return loss, walks.numel()
+    token_count = (walks != t.PAD).sum()
+    return loss, token_count
 
 def train(g: SparseGraphSampler, model: BERT):
     opt = AdamW(
@@ -51,37 +52,44 @@ def train(g: SparseGraphSampler, model: BERT):
     e = 0
     while processed_tokens < TOTAL_T:
         for i,mb in enumerate(g):
-            st = time.time()
-            opt.zero_grad()
             loss, tokens = minibatch(mb, model)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-            opt.step()
-            sched.step()
-            en = time.time()
+            steps += 1
 
-            processed_tokens += tokens
-            updates += 1
+            if steps * MINI_BS >= BS:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+                opt.step()
+                sched.step()
+                en = time.time()
 
-            # Log epoch
-            with open('bertlog.txt', 'a') as f:
-                f.write(f'{loss},{updates},{processed_tokens}\n')
+                processed_tokens += tokens
+                t.set_mask_rate(processed_tokens / TOTAL_T)
 
-            lr = sched.get_last_lr()[0]
-            sched.last_epoch = processed_tokens
+                updates += 1
 
-            print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
-            del loss
+                # Log epoch
+                with open('bertlog.txt', 'a') as f:
+                    f.write(f'{loss},{updates},{processed_tokens}\n')
+
+                lr = sched.get_last_lr()[0]
+                sched.last_epoch = processed_tokens
+
+                print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
+                del loss
+                steps = 0
+
+                st = time.time()
+                opt.zero_grad()
 
             if processed_tokens >= TOTAL_T:
                 break
 
-            if updates % 100 == 0:
+            if updates % 100 == 99:
                 torch.save(
                     (model.args, model.kwargs, model.state_dict()),
                     'bert.pt'
                 )
 
-            if updates % 10_000 == 0:
+            if updates % 10_000 == 9999:
                 torch.save(
                     (model.args, model.kwargs, model.state_dict()),
                     f'bert-{updates//10_000}.pt'
@@ -99,9 +107,10 @@ def train(g: SparseGraphSampler, model: BERT):
 
 if __name__ == '__main__':
     g = torch.load('data/lanl_tr.pt', weights_only=False)
-    g = SparseGraphSampler(g, batch_size=BS, neighbors=20)
-    num_tokens = g.x.max().long() + 3 + 1
-    t = Tokenizer(num_tokens, 3)
+    g = SparseGraphSampler(g, batch_size=MINI_BS, neighbors=50)
+    num_tokens = g.x.max().long() + 1
+    t = Tokenizer(g.x)
+    t.set_mask_rate(0)
 
     # BERT Mini
     model = BERT(

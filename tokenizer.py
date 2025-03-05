@@ -1,4 +1,3 @@
-from multiprocessing import Pool
 from joblib import Parallel, delayed
 
 import torch
@@ -16,6 +15,70 @@ class Tokenizer():
         self.NEW_PATH = self.PAD + 1
         self.MASK = self.NEW_PATH + 1
         self.vocab_size = self.MASK+1
+
+    def _tokenize_and_mask_one_nf(self, data, maskrate=0.15):
+        g = to_networkx(data, to_undirected=True)
+
+        # Abt 0.001s on average
+        if not nx.is_eulerian(g):
+            ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
+            ccs = [nx.eulerize(cc) for cc in ccs]
+        else:
+            ccs = [g]
+
+        to_perturb = (torch.rand(data.num_nodes) < maskrate).nonzero().squeeze()
+        if to_perturb.dim() == 0:
+            to_perturb = to_perturb.unsqueeze(-1)
+
+        how_perturb = torch.rand(to_perturb.size(0))
+
+        to_mask = to_perturb[how_perturb < 0.8].unsqueeze(-1)
+        to_switch = to_perturb[(how_perturb >= 0.8).logical_and(how_perturb < 0.9)].unsqueeze(-1)
+        to_keep = to_perturb[how_perturb >= 0.9].unsqueeze(-1)
+
+        seqs = []
+        tgt_seqs = []
+        target_ids = []
+        for i,cc in enumerate(ccs):
+            path_ = [p for p in nx.eulerian_path(cc)]
+            path = torch.tensor([p[0] for p in path_] + [path_[-1][1]])
+
+            seq = data.x[path]
+            seq = seq.view(-1).long()
+            tgt_seq = seq.clone()
+
+            mask = (path == to_mask).sum(dim=0).bool()
+            switch = (path == to_switch).sum(dim=0).bool()
+            keep = (path == to_keep).sum(dim=0).bool()
+
+            # Mask out nodes
+            target = torch.zeros(seq.size(0), dtype=torch.bool)
+            seq[mask] = self.MASK
+            target[mask] = True
+
+            # Randomly swap nodes
+            seq[switch] = torch.randint(0, self.num_nodes, size=(switch.sum(),))
+            target[switch] = True
+
+            # Leave some nodes unchanged but still predict them
+            target[keep] = True
+
+            seqs.append(seq)
+            tgt_seqs.append(tgt_seq[target])
+            target_ids.append(target)
+
+            target_ids.append(torch.tensor([False]))
+
+            if i == len(ccs)-1:
+                seqs.append(torch.tensor([self.EOS]))
+            else:
+                seqs.append(torch.tensor([self.NEW_PATH]))
+
+        seqs = torch.cat(seqs)
+        tgt_seqs = torch.cat(tgt_seqs)
+        mask = torch.cat(target_ids)
+
+        return seqs, tgt_seqs, mask
 
     def _tokenize_and_mask_one(self, data, maskrate=0.15):
         '''
@@ -89,9 +152,14 @@ class Tokenizer():
         return seqs, tgt_seqs, mask
 
     def tokenize_and_mask(self, subgraphs):
-        out = Parallel(prefer='processes', n_jobs=16)(
-            delayed(self._tokenize_and_mask_one)(sg) for sg in subgraphs
-        )
+        if self.num_nodetypes <= 1:
+            out = Parallel(prefer='processes', n_jobs=16)(
+                delayed(self._tokenize_and_mask_one_nf)(sg) for sg in subgraphs
+            )
+        else:
+            out = Parallel(prefer='processes', n_jobs=16)(
+                delayed(self._tokenize_and_mask_one)(sg) for sg in subgraphs
+            )
 
         seqs,tgts,masks = zip(*out)
         #seqs,tgts,masks = zip(*[self._tokenize_and_mask_one(sg) for sg in subgraphs])
@@ -210,3 +278,10 @@ class Tokenizer():
 
         targets = torch.tensor(targets)
         return seqs.T, targets.T
+
+    def simple_lp_tokenize(self, x, edges):
+        src = x[edges[0]]
+        dst = x[edges[1]] + self.num_nodetypes
+        #mask = torch.tensor([[self.MASK]]).repeat(src.size(0),1)
+        seqs = torch.cat([src,dst], dim=1).T
+        return seqs.long()
