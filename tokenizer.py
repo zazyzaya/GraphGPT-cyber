@@ -1,287 +1,163 @@
+from collections import defaultdict
 from joblib import Parallel, delayed
+import math
+from random import randint
 
 import torch
 import networkx as nx
 from torch_geometric.utils import to_networkx
 
 class Tokenizer():
-    def __init__(self, num_nodes, num_nodetypes):
-        self.num_nodetypes = num_nodetypes
-        self.num_nodes = num_nodes
+    def __init__(self, x, max_path_len=256):
+        self.max_path_len = max_path_len
 
-        self.SOS = num_nodes + num_nodetypes + 1
+        max_feats = x.max(dim=0).values.long()
+        feat_offset = [0]
+        for i in range(max_feats.size(0)-1):
+            feat_offset.append(feat_offset[-1] + max_feats[i] + 1)
+
+        self.feat_offset = torch.tensor(feat_offset)
+        self.max_feat_id = max_feats[-1] + feat_offset[-1]
+
+        self.mask_rate = 0.15
+
+        self.IDX = self.max_feat_id+1
+        self.PAD = self.IDX+max_path_len + 1
+        self.SOS = self.PAD + 1
         self.EOS = self.SOS + 1
-        self.PAD = self.EOS + 1
-        self.NEW_PATH = self.PAD + 1
-        self.MASK = self.NEW_PATH + 1
-        self.vocab_size = self.MASK+1
+        self.JUMP = self.EOS + 1
+        self.MASK = self.JUMP +1
 
-    def _tokenize_and_mask_one_nf(self, data, maskrate=0.15):
-        g = to_networkx(data, to_undirected=True)
+        self.vocab_size = self.MASK + 1
 
-        # Abt 0.001s on average
-        if not nx.is_eulerian(g):
-            ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
-            ccs = [nx.eulerize(cc) for cc in ccs]
-        else:
-            ccs = [g]
+    def set_mask_rate(self, percent_done, fixed_rate=0.7, decay_type='poly'):
+        # Use polynomial annealing as in GraphGPT PPA settings
+        if decay_type == 'cos':
+            anneal = math.cos( percent_done * (math.pi / 2) )
+        elif decay_type == 'poly':
+            anneal = 1 - (percent_done ** 2)
 
-        to_perturb = (torch.rand(data.num_nodes) < maskrate).nonzero().squeeze()
-        if to_perturb.dim() == 0:
-            to_perturb = to_perturb.unsqueeze(-1)
+        self.mask_rate = anneal * fixed_rate
 
-        how_perturb = torch.rand(to_perturb.size(0))
+    def _mask_nodes(self, nids, seq):
+        to_mask = (seq[:,0] == nids).sum(dim=0).bool()
+        to_mask = to_mask.unsqueeze(-1).repeat(1, seq.size(1))
+        to_mask[:, -1] = False # Don't mask special tokens like EOS and JUMP
+        to_mask = to_mask.logical_and(seq != -1) # Dont mask ignored parts that won't be included
 
-        to_mask = to_perturb[how_perturb < 0.8].unsqueeze(-1)
-        to_switch = to_perturb[(how_perturb >= 0.8).logical_and(how_perturb < 0.9)].unsqueeze(-1)
-        to_keep = to_perturb[how_perturb >= 0.9].unsqueeze(-1)
+        tgt = seq[to_mask]
+        predict_idx = to_mask.clone()
 
-        seqs = []
-        tgt_seqs = []
-        target_ids = []
-        for i,cc in enumerate(ccs):
-            path_ = [p for p in nx.eulerian_path(cc)]
-            path = torch.tensor([p[0] for p in path_] + [path_[-1][1]])
+        # Don't actually mask 20%
+        dont_mask = (to_mask == True).nonzero()
+        idx = torch.randperm(dont_mask.size(0))[int(dont_mask.size(0) * 0.8):]
+        dont_mask = dont_mask[idx]
+        to_mask[dont_mask[:, 0], dont_mask[:, 1]] = False
 
-            seq = data.x[path]
-            seq = seq.view(-1).long()
-            tgt_seq = seq.clone()
+        seq[to_mask] = self.MASK
+        return seq,tgt,predict_idx
 
-            mask = (path == to_mask).sum(dim=0).bool()
-            switch = (path == to_switch).sum(dim=0).bool()
-            keep = (path == to_keep).sum(dim=0).bool()
-
-            # Mask out nodes
-            target = torch.zeros(seq.size(0), dtype=torch.bool)
-            seq[mask] = self.MASK
-            target[mask] = True
-
-            # Randomly swap nodes
-            seq[switch] = torch.randint(0, self.num_nodes, size=(switch.sum(),))
-            target[switch] = True
-
-            # Leave some nodes unchanged but still predict them
-            target[keep] = True
-
-            seqs.append(seq)
-            tgt_seqs.append(tgt_seq[target])
-            target_ids.append(target)
-
-            target_ids.append(torch.tensor([False]))
-
-            if i == len(ccs)-1:
-                seqs.append(torch.tensor([self.EOS]))
-            else:
-                seqs.append(torch.tensor([self.NEW_PATH]))
-
-        seqs = torch.cat(seqs)
-        tgt_seqs = torch.cat(tgt_seqs)
-        mask = torch.cat(target_ids)
-
-        return seqs, tgt_seqs, mask
-
-    def _tokenize_and_mask_one(self, data, maskrate=0.15):
+    def _tokenize_one(self, data, mask):
         '''
         Expects data object of subgraph with attrs
             x: N x 2 matrix of nodetype and node id (uq to the type)
             ei: edge index
         '''
         g = to_networkx(data, to_undirected=True)
-
-        # Abt 0.001s on average
         if not nx.is_eulerian(g):
             ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
             ccs = [nx.eulerize(cc) for cc in ccs]
         else:
             ccs = [g]
 
-        to_perturb = (torch.rand(data.num_nodes) < maskrate).nonzero().squeeze()
-        if to_perturb.dim() == 0:
-            to_perturb = to_perturb.unsqueeze(-1)
-
-        how_perturb = torch.rand(to_perturb.size(0))
-
-        to_mask = to_perturb[how_perturb < 0.8].unsqueeze(-1)
-        to_switch = to_perturb[(how_perturb >= 0.8).logical_and(how_perturb < 0.9)].unsqueeze(-1)
-        to_keep = to_perturb[how_perturb >= 0.9].unsqueeze(-1)
-
         seqs = []
-        tgt_seqs = []
-        target_ids = []
-        for i,cc in enumerate(ccs):
+        feats = []
+        for cc in ccs:
             path_ = [p for p in nx.eulerian_path(cc)]
-            path = torch.tensor([p[0] for p in path_] + [path_[-1][1]])
+            path = [p[0] for p in path_] + [path_[-1][1]]
+            seqs.append(torch.tensor(path))
 
-            seq = data.x[path]
-            seq[:, 1] += self.num_nodetypes
-            seq = seq.view(-1).long()
-            tgt_seq = seq.clone()
+            x = data.x[path] + self.feat_offset
+            feat = torch.cat([x, torch.full((len(path),1), -1)], dim=1)
+            feat[-1, -1] = self.JUMP
+            feats.append(feat)
 
-            mask = (path == to_mask).sum(dim=0).bool().repeat_interleave(2)
-            switch = (path == to_switch).sum(dim=0).bool().repeat_interleave(2)
-            keep = (path == to_keep).sum(dim=0).bool().repeat_interleave(2)
 
-            # Mask out nodes
-            target = torch.zeros(seq.size(0), dtype=torch.bool)
-            seq[mask] = self.MASK
-            target[mask] = True
+        seq_join = torch.cat(seqs)
+        feat_join = torch.cat(feats)
+        tokens = torch.cat([seq_join.unsqueeze(-1), feat_join], dim=1).long()
+        uq,cnt = seq_join.unique(return_counts=True)
+        gets_features_at = [randint(0, c-1) for c in cnt] # At which occurrence do we append features
 
-            # Randomly swap nodes
-            switch_dtype = torch.tensor([True, False]).repeat(target.size(0)//2)
-            seq[switch_dtype.logical_and(switch)] = torch.randint(0,2, size=(switch.sum()//2,))
-            seq[(~switch_dtype).logical_and(switch)] = torch.randint(self.num_nodetypes, self.num_nodes+self.num_nodetypes, size=(switch.sum()//2,))
-            target[switch] = True
+        appearences = defaultdict(lambda : 0)
+        for i in range(tokens.size(0)):
+            idx = tokens[i,0].item()
 
-            # Leave some nodes unchanged but still predict them
-            target[keep] = True
-            seqs.append(seq)
-            tgt_seqs.append(tgt_seq[target])
-            target_ids.append(target)
+            if appearences[idx] != gets_features_at[idx]:
+                tokens[i, 1:-1] = -1
 
-            target_ids.append(torch.tensor([False]))
+            appearences[idx] += 1
 
-            if i == len(ccs)-1:
-                seqs.append(torch.tensor([self.EOS]))
-            else:
-                seqs.append(torch.tensor([self.NEW_PATH]))
+        # Use path indexes
+        offset = randint(0,self.max_path_len)
+        tokens[:, 0] += offset
+        tokens[:, 0] %= self.max_path_len
+        tokens[:, 0] += self.IDX
 
-        seqs = torch.cat(seqs)
-        tgt_seqs = torch.cat(tgt_seqs)
-        mask = torch.cat(target_ids)
+        if mask:
+            nids = tokens[:,0].unique()
+            to_mask = torch.rand(nids.size()) < self.mask_rate
+            nids = nids[to_mask].unsqueeze(-1)
+            seq,tgt,tgt_idx = self._mask_nodes(nids, tokens)
 
-        return seqs, tgt_seqs, mask
+        seq = tokens.view(-1)
+        remove_dupes = seq != -1
+        seq = seq[remove_dupes]
+        seq[-1] = self.EOS
+
+        if mask:
+            return seq, tgt, tgt_idx.view(-1)[remove_dupes]
+        return seq
 
     def tokenize_and_mask(self, subgraphs):
-        if self.num_nodetypes <= 1:
-            out = Parallel(prefer='processes', n_jobs=16)(
-                delayed(self._tokenize_and_mask_one_nf)(sg) for sg in subgraphs
-            )
-        else:
-            out = Parallel(prefer='processes', n_jobs=16)(
-                delayed(self._tokenize_and_mask_one)(sg) for sg in subgraphs
-            )
+        out = Parallel(prefer='processes', n_jobs=16)(
+            delayed(self._tokenize_one)(sg, True) for sg in subgraphs
+        )
 
-        seqs,tgts,masks = zip(*out)
-        #seqs,tgts,masks = zip(*[self._tokenize_and_mask_one(sg) for sg in subgraphs])
+        seqs,tgts,tgt_idx = zip(*out)
         out_seqs = torch.full(
             (len(seqs), max([s.size(0) for s in seqs])),
             self.PAD
         )
-        out_mask = torch.full(out_seqs.size(), False)
+        mask = torch.zeros(out_seqs.size(), dtype=torch.bool)
 
         for i, seq in enumerate(seqs):
             out_seqs[i, :seq.size(0)] = seq
-            m = masks[i]
-            out_mask[i, :m.size(0)] = m
+            idx = tgt_idx[i]
+            mask[i, :idx.size(0)] = idx
 
-        return out_seqs.T, out_mask.T, torch.cat(tgts)
+        out_seqs = out_seqs
+        mask = mask
+        return out_seqs, mask, torch.cat(tgts)
 
-    def _tokenize_one(self, data):
-        '''
-        Expects data object of subgraph with attrs
-            x: N x 2 matrix of nodetype and node id (uq to the type)
-            ei: edge index
-        '''
-        g = to_networkx(data, to_undirected=True)
-        if not nx.is_eulerian(g):
-            ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
-            ccs = [nx.eulerize(cc) for cc in ccs]
-        else:
-            ccs = [g]
 
-        seqs = []
-        for cc in ccs:
-            path_ = [p for p in nx.eulerian_path(cc)]
-            path = [p[0] for p in path_] + [path_[-1][1]]
 
-            # TODO get rid of repeated attrs
-            seq = data.x[path]
-            seq[:, 1] += self.num_nodetypes
-            seq = seq.view(-1).long()
-            seqs.append(seq)
+if __name__ == '__main__':
+    from sampler import SparseGraphSampler
+    g = torch.load('data/lanl_tr.pt', weights_only=False)
+    g = SparseGraphSampler(g)
+    samp = g.sample(torch.randint(0, g.x.size(0), (64,2)))
+    t = Tokenizer(g.x)
 
-        joined_seqs = [torch.tensor([self.SOS])]
-        for seq in seqs:
-            joined_seqs.append(seq)
-            joined_seqs.append(torch.tensor([self.NEW_PATH]))
-
-        joined_seqs = joined_seqs[:-1]
-        joined_seqs.append(torch.tensor([self.EOS]))
-
-        seq = torch.cat(joined_seqs)
-        return seq
-
-    def tokenize(self, subgraphs):
-        seq_ls = [self._tokenize_one(sg) for sg in subgraphs]
-        seqs = torch.full(
-            (len(seq_ls), max([s.size(0) for s in seq_ls])),
-            self.PAD
-        )
-
-        targets = torch.zeros(seqs.size(), dtype=torch.bool)
-        for i, seq in enumerate(seq_ls):
-            seqs[i, :seq.size(0)] = seq
-            targets[i, :seq.size(0)] = True
-
-        return seqs.T, targets.T
-
-    def _lp_tokenize_one(self, data):
-        g = to_networkx(data, to_undirected=True)
-        if not nx.is_eulerian(g):
-            ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
-            ccs = [nx.eulerize(cc) for cc in ccs]
-        else:
-            ccs = [g]
-
-        seqs = []
-        for cc in ccs:
-            # Isolated node
-            if len(cc) == 1:
-                path = [n for n in cc.nodes]
-            else:
-                path_ = [p for p in nx.eulerian_path(cc)]
-                path = [p[0] for p in path_] + [path_[-1][1]]
-
-            # TODO get rid of repeated attrs
-            seq = data.x[path]
-            seq[:, 1] += self.num_nodetypes
-            seq = seq.view(-1).long()
-            seqs.append(seq)
-
-        joined_seqs = [torch.tensor([self.SOS])]
-        for seq in seqs:
-            joined_seqs.append(seq)
-            joined_seqs.append(torch.tensor([self.NEW_PATH]))
-
-        joined_seqs = joined_seqs[:-1]
-        joined_seqs.append(torch.tensor([self.EOS]))
-
-        # Last 4 tokens are node identity embeddings of target
-        # [ntype], [nid], [ntype], [nid]
-        target = data.x[data.root_n_id].view(-1)
-        joined_seqs.append(target)
-
-        seq = torch.cat(joined_seqs)
-        return seq
-
-    def lp_tokenize(self, subgraphs):
-        seq_ls = [self._lp_tokenize_one(sg) for sg in subgraphs]
-        seqs = torch.full(
-            (len(seq_ls), max([s.size(0) for s in seq_ls])),
-            self.PAD
-        )
-
-        targets = []
-        for i, seq in enumerate(seq_ls):
-            seqs[i, :seq.size(0)] = seq
-            targets.append([j + (seq.size(0)-4) for j in range(4)])
-
-        targets = torch.tensor(targets)
-        return seqs.T, targets.T
-
-    def simple_lp_tokenize(self, x, edges):
-        src = x[edges[0]]
-        dst = x[edges[1]] + self.num_nodetypes
-        #mask = torch.tensor([[self.MASK]]).repeat(src.size(0),1)
-        seqs = torch.cat([src,dst], dim=1).T
-        return seqs.long()
+    t.set_mask_rate(0)
+    print(t.tokenize_and_mask(samp)[2].size())
+    t.set_mask_rate(0.001)
+    print(t.tokenize_and_mask(samp)[2].size())
+    t.set_mask_rate(0.25)
+    print(t.tokenize_and_mask(samp)[2].size())
+    t.set_mask_rate(0.5)
+    print(t.tokenize_and_mask(samp)[2].size())
+    t.set_mask_rate(0.75)
+    print(t.tokenize_and_mask(samp)[2].size())
+    t.set_mask_rate(0.999)
+    print(t.tokenize_and_mask(samp)[2].size())
