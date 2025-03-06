@@ -30,10 +30,14 @@ class Tokenizer():
 
         self.vocab_size = self.MASK + 1
 
-    def set_mask_rate(self, percent_done):
-        # Use cosine annealing as is done in MaskGIT paper
-        anneal = math.cos( percent_done * (math.pi / 2) )
-        self.mask_rate = anneal
+    def set_mask_rate(self, percent_done, fixed_rate=0.7, decay_type='poly'):
+        # Use polynomial annealing as in GraphGPT PPA settings
+        if decay_type == 'cos':
+            anneal = math.cos( percent_done * (math.pi / 2) )
+        elif decay_type == 'poly':
+            anneal = 1 - (percent_done ** 2)
+
+        self.mask_rate = anneal * fixed_rate
 
     def _mask_nodes(self, nids, seq):
         to_mask = (seq[:,0] == nids).sum(dim=0).bool()
@@ -42,8 +46,16 @@ class Tokenizer():
         to_mask = to_mask.logical_and(seq != -1) # Dont mask ignored parts that won't be included
 
         tgt = seq[to_mask]
+        predict_idx = to_mask.clone()
+
+        # Don't actually mask 20%
+        dont_mask = (to_mask == True).nonzero()
+        idx = torch.randperm(dont_mask.size(0))[int(dont_mask.size(0) * 0.8):]
+        dont_mask = dont_mask[idx]
+        to_mask[dont_mask[:, 0], dont_mask[:, 1]] = False
+
         seq[to_mask] = self.MASK
-        return seq,tgt
+        return seq,tgt,predict_idx
 
     def _tokenize_one(self, data, mask):
         '''
@@ -96,14 +108,15 @@ class Tokenizer():
             nids = tokens[:,0].unique()
             to_mask = torch.rand(nids.size()) < self.mask_rate
             nids = nids[to_mask].unsqueeze(-1)
-            seq,tgt = self._mask_nodes(nids, tokens)
+            seq,tgt,tgt_idx = self._mask_nodes(nids, tokens)
 
         seq = tokens.view(-1)
-        seq = seq[seq != -1]
+        remove_dupes = seq != -1
+        seq = seq[remove_dupes]
         seq[-1] = self.EOS
 
         if mask:
-            return seq, tgt
+            return seq, tgt, tgt_idx.view(-1)[remove_dupes]
         return seq
 
     def tokenize_and_mask(self, subgraphs):
@@ -111,17 +124,20 @@ class Tokenizer():
             delayed(self._tokenize_one)(sg, True) for sg in subgraphs
         )
 
-        seqs,tgts = zip(*out)
+        seqs,tgts,tgt_idx = zip(*out)
         out_seqs = torch.full(
             (len(seqs), max([s.size(0) for s in seqs])),
             self.PAD
         )
+        mask = torch.zeros(out_seqs.size(), dtype=torch.bool)
 
         for i, seq in enumerate(seqs):
             out_seqs[i, :seq.size(0)] = seq
+            idx = tgt_idx[i]
+            mask[i, :idx.size(0)] = idx
 
-        out_seqs = out_seqs.T
-        mask = out_seqs == self.MASK
+        out_seqs = out_seqs
+        mask = mask
         return out_seqs, mask, torch.cat(tgts)
 
 
