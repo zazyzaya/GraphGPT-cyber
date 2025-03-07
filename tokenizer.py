@@ -73,8 +73,12 @@ class Tokenizer():
         seqs = []
         feats = []
         for cc in ccs:
-            path_ = [p for p in nx.eulerian_path(cc)]
-            path = [p[0] for p in path_] + [path_[-1][1]]
+            if len(cc) == 1:
+                path = [n for n in cc.nodes]
+            else:
+                path_ = [p for p in nx.eulerian_path(cc)]
+                path = [p[0] for p in path_] + [path_[-1][1]]
+
             seqs.append(torch.tensor(path))
 
             x = data.x[path] + self.feat_offset
@@ -140,6 +144,27 @@ class Tokenizer():
         mask = mask
         return out_seqs, mask, torch.cat(tgts)
 
+    def lp_tokenize(self, subgraphs):
+        seqs = Parallel(prefer='processes', n_jobs=16)(
+            delayed(self._tokenize_one)(sg, False) for sg in subgraphs
+        )
+
+        out_seqs = torch.full(
+            (len(seqs), max([s.size(0) for s in seqs])+2*subgraphs[0].x.size(1)),
+            self.PAD
+        )
+        mask = torch.zeros(out_seqs.size(), dtype=torch.bool)
+
+        # Add feats of edge we're predicting to end of sequence
+        pred_edge = torch.cat(
+            [(sg.x[sg.root_n_id] + self.feat_offset).view(1, -1) for sg in subgraphs]
+        )
+        for i, seq in enumerate(seqs):
+            out_seqs[i, :seq.size(0)] = seq
+            out_seqs[i, seq.size(0):seq.size(0) + pred_edge.size(1)] = pred_edge[i]
+            mask[i, seq.size(0) + pred_edge.size(1) - 1] = True
+
+        return out_seqs, mask
 
 
 if __name__ == '__main__':
