@@ -54,7 +54,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
 
-    def modified_fwd(self, walks, masks, targets):
+    def modified_fwd(self, walks, masks, targets, attn_mask):
         input_ids = walks.to(self.device)
         tgt = torch.full(masks.size(), -100)
         tgt[masks] = targets
@@ -66,7 +66,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
 
         out = self.forward(
             input_ids, labels=tgt, position_ids=pos_ids,
-            return_dict=True
+            return_dict=True, attention_mask=attn_mask.to(self.device)
         )
         return out.loss
 

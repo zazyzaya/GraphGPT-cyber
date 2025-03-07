@@ -31,7 +31,8 @@ class Scheduler(LRScheduler):
 
 def minibatch(mb, model: BERT):
     walks,masks,targets = t.tokenize_and_mask(mb)
-    loss = model.modified_fwd(walks, masks, targets)
+    attn_mask = (walks != t.PAD).float()
+    loss = model.modified_fwd(walks, masks, targets, attn_mask)
     loss.backward()
 
     token_count = (walks != t.PAD).sum()
@@ -120,8 +121,8 @@ if __name__ == '__main__':
     SIZE = args.size
     DEVICE = args.device
 
-    g = torch.load('data/lanl_tr.pt', weights_only=False)
-    g = SparseGraphSampler(g, batch_size=MINI_BS, neighbors=25)
+    g = torch.load('data/lanl_all_tr.pt', weights_only=False)
+    g = SparseGraphSampler(g, batch_size=MINI_BS, neighbors=15)
     num_tokens = g.x.max().long() + 1
     t = Tokenizer(g.x)
     t.set_mask_rate(0)

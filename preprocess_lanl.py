@@ -10,15 +10,17 @@ TEST_START = 147_600
 ATTACK_START = 150_885
 FOURTEEN_DAYS = (60*60*24) * 14
 TOTAL_EVENTS = 239_558_591
-HOME_DIR = '/mnt/raid10/lanl'
+HOME_DIR = '/mnt/raid10/cyber_datasets/lanl'
 
 def parse_auth():
     f = gzip.open(f'{HOME_DIR}/auth.txt.gz', 'rt')
     line = f.readline()
 
     TS = 0
-    SRC = 3
-    DST = 4
+    SRC_U = 1
+    DST_U = 2
+    SRC_C = 3
+    DST_C = 4
     AUTH_TYPE = 5
     SUCCESS = 8
     # Other two feats are always the same
@@ -31,7 +33,7 @@ def parse_auth():
     redlog = gzip.open(f'{HOME_DIR}/redteam.txt.gz', 'rt')
     next_red = redlog.readline().split(',')
 
-    out_f = open(f'{HOME_DIR}/processed/auth_cc_tr.txt', 'w+')
+    out_f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'w+')
     opened_test = False
     prog = tqdm(total=TOTAL_EVENTS)
 
@@ -44,32 +46,41 @@ def parse_auth():
         if tokens[TS] == str(TEST_START) and not opened_test:
             opened_test = True
             out_f.close()
-            out_f = open(f'{HOME_DIR}/processed/auth_cc_te.txt', 'w+')
+            out_f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'w+')
 
-        src = tokens[SRC]
+        src_u = parse_src(tokens[SRC_U])
+        src_c = tokens[SRC_C]
+        dst = tokens[DST_C]
 
         if not opened_test:
             out_f.write(
                 ','.join([
-                    src, tokens[DST],
-                    tokens[TS], tokens[SUCCESS][0]]
-                ) + '\n'
+                    src_u, src_c,
+                    tokens[TS], tokens[SUCCESS][0]
+                ]) + '\n' + ','.join([
+                    src_c, dst,
+                    tokens[TS], tokens[SUCCESS][0]
+                ]) + '\n'
             )
         else:
-            is_mal = 0
+            is_mal = '0'
             if next_red[0] == tokens[TS]:
-                if (tokens[SRC] == next_red[1] and
-                    tokens[DST-1] == next_red[2] and
-                    tokens[DST] == next_red[3][:-1]):
+                if (tokens[SRC_U] == next_red[1] and
+                    tokens[SRC_C] == next_red[2] and
+                    tokens[DST_C] == next_red[3][:-1]):
 
-                    is_mal = 1
+                    is_mal = '1'
                     next_red = redlog.readline().split(',')
 
             out_f.write(
                 ','.join([
-                    src, tokens[DST],
+                    src_u, src_c,
                     tokens[TS], tokens[SUCCESS][0],
-                    str(is_mal)
+                    is_mal
+                ]) + '\n' + ','.join([
+                    src_c, dst,
+                    tokens[TS], tokens[SUCCESS][0],
+                    is_mal
                 ]) + '\n'
             )
 
@@ -80,7 +91,7 @@ def parse_auth():
     prog.close()
 
 def to_torch(partition='tr'):
-    f = open(f'{HOME_DIR}/processed/auth_cc_{partition}.txt', 'r')
+    f = open(f'{HOME_DIR}/processed/auth_all_{partition}.txt', 'r')
     nid = dict()
     users = dict(); computers = dict(); other = dict()
     edges = defaultdict(lambda : 0)
@@ -164,9 +175,15 @@ def to_torch(partition='tr'):
         label=label
     )
 
+def load_yelp():
+    from scipy.io import loadmat
+    mat = loadmat('data/YelpChi.mat')
+    print('woo')
+
 if __name__ == '__main__':
-    parse_auth()
-    g = to_torch('tr')
-    torch.save(g, 'data/lanl_cc_tr.pt')
-    g = to_torch('te')
-    torch.save(g, 'data/lanl_cc_te.pt')
+    #parse_auth()
+    #g = to_torch('tr')
+    #torch.save(g, 'data/lanl_all_tr.pt')
+    #g = to_torch('te')
+    #torch.save(g, 'data/lanl_all_te.pt')
+    load_yelp()

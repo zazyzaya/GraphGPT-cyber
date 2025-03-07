@@ -22,7 +22,7 @@ WARMUP_E = 9.6  # Epochs
 EPOCHS = 32    # Epochs
 
 MINI_BS = 512
-BS = 1024 // 2
+BS = 1024 // 2 # Adding equal number of neg samples
 EVAL_BS = 1024
 T_MAX = 100_000 # From alibaba source code
 
@@ -138,7 +138,7 @@ def evaluate(model, tr, to_eval):
 
 def simple_train(tr,va,te, model: GraphBertFT):
     opt = AdamW(
-        model.parameters(), lr=1e-3,
+        model.parameters(), lr=3e-4,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
     )
 
@@ -380,12 +380,12 @@ if __name__ == '__main__':
     arg.add_argument('--device', type=int, default=0)
     args = arg.parse_args()
 
-    SIZE = 'mini' #args.size
+    SIZE = 'med' #args.size
     DEVICE = 0 #args.device
 
     params = {
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=512),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=128)
+        'med': SimpleNamespace(H=512, L=8, MINI_BS=256)
     }[SIZE]
     MINI_BS = params.MINI_BS
 
@@ -400,5 +400,5 @@ if __name__ == '__main__':
         intermediate_size=   params.H * 4
     )
 
-    model = GraphBertFT(config, f'bert-1_{SIZE}.pt', device=DEVICE)
+    model = GraphBertFT(config, f'bert_{SIZE}.pt', device=DEVICE)
     train(tr,va,te,model)

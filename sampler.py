@@ -83,11 +83,15 @@ class SparseGraphSampler():
         return datas
 
     def __iter__(self):
-        idx = torch.randperm(self.data.edge_index.size(1))
+        # Ignore self-loops
+        ei = self.data.edge_index[
+            :, self.data.edge_index[0] != self.data.edge_index[1]
+        ]
+        idx = torch.randperm(ei.size(1))
         idx = idx.split(self.batch_size)
 
         for batch in idx:
-            eidx = self.data.edge_index[:, batch].T
+            eidx = ei[:, batch].T
             data = self.sample(eidx)
             yield data
 
