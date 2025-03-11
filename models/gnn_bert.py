@@ -17,20 +17,54 @@
 import torch
 
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from torch import nn
+from torch_geometric.nn.models import GCN
 from typing import List, Optional, Tuple, Union
 from transformers.models.bert.modeling_bert import (
     BertPreTrainedModel,
     BertModel,
     BertOnlyMLMHead,
+    BertEmbeddings,
+    BertEncoder,
+    BertPooler
 )
 from transformers.modeling_outputs import MaskedLMOutput
 from transformers.utils import logging
 
+from models.hugging_bert import GraphBertForMaskedLM
+
 logger = logging.get_logger(__name__)
 
 
+class GNNEmbedding(nn.Module):
+    PAD = -2
+    MASK = -1
+    OFFSET = 2
+
+    def __init__(self, config):
+        super().__init__(config=config)
+        self.gnn = GCN(config.hidden_size, config.hidden_size, config.gnn_layers)
+        self.word_embeddings = nn.Embedding(2, config.hidden_size)
+
+    def forward(self, x, ei, seq):
+        z = self.gnn(x,ei)
+
+        embs = torch.zeros(
+            (seq.size(0), seq.size(1), z.size(1)),
+            device=x.device
+        )
+        nodes = seq >= 0
+        special = ~nodes
+
+        # Use GNN output as embedding for any nodes
+        embs[nodes] = z[seq[nodes]]
+        embs[~special] = self.word_embeddings(seq[special]+self.OFFSET)
+
+        return embs
+
+
 # copied and modified from `transformers/models/bert/modeling_bert.py::BertForMaskedLM`
-class GraphBertForMaskedLM(BertPreTrainedModel):
+class GNNBert(BertPreTrainedModel):
     _tied_weights_keys = ["predictions.decoder.bias", "cls.predictions.decoder.weight"]
 
     def __init__(self, config):
@@ -42,6 +76,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
                 "bi-directional self-attention."
             )
 
+        self.gnn = GNNEmbedding(config)
         self.bert = BertModel(config, add_pooling_layer=False)
         self.cls = BertOnlyMLMHead(config)
 
@@ -54,7 +89,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
 
-    def modified_fwd(self, walks, masks, targets, attn_mask):
+    def modified_fwd(self, x,ei, walks, masks, targets, attn_mask):
         input_ids = walks.to(self.device)
         tgt = torch.full(masks.size(), -100)
         tgt[masks] = targets
@@ -64,8 +99,10 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
             device=self.device).repeat(tgt.size(0), 1
         )
 
+        input_embs = self.gnn(x,ei, walks)
+
         out = self.forward(
-            input_ids, labels=tgt, position_ids=pos_ids,
+            input_ids, labels=tgt, position_ids=pos_ids, inputs_embeds=input_embs,
             return_dict=True, attention_mask=attn_mask.to(self.device)
         )
         return out.loss
@@ -141,58 +178,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-
-class GraphBertFT(torch.nn.Module):
-    def __init__(self, config, weights, device='cpu'):
-        super().__init__()
-        self.fm = GraphBertForMaskedLM(config)
-        sd = torch.load(weights, weights_only=True, map_location='cpu')
-        self.fm.load_state_dict(sd)
-        self.fm = self.fm.to(device)
-        del self.fm.cls
-
-        self.cls = torch.nn.Linear(config.hidden_size, 1, device=device)
-
-        self.config = config
-        self.device = device
-
-    def predict(self, walks, masks) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
-        return_dict = self.config.use_return_dict
-
-        input_ids = walks.to(self.device)
-        position_ids = torch.arange(
-            input_ids.size(1),
-            device=self.device).repeat(input_ids.size(0), 1
-        )
-
-        attn_mask = (walks != self.config.padding_idx).to(self.device)
-
-        if len(input_ids.shape) == 3:
-            inputs_embeds = self.bert.embeddings.word_embeddings(input_ids)
-            # [bz, seq, feat, dim]
-            inputs_embeds = torch.sum(inputs_embeds, dim=-2)
-            # [bz, seq, dim]
-            assert inputs_embeds.shape[:2] == input_ids.shape[:2]
-            input_ids = None
-
-        outputs = self.fm.bert(
-            input_ids,
-            position_ids=position_ids,
-            return_dict=return_dict,
-            attention_mask=attn_mask
-        )[0]
-        predictions = self.cls(outputs[masks])
-        return predictions
-
-    def forward(self, walks, masks, targets) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
-            config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are ignored (masked), the
-            loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
-        """
-        predictions = self.predict(walks, masks)
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-
-        loss = loss_fn(predictions, targets.to(self.device))
-        return loss
+class RWBert(GraphBertForMaskedLM):
+    def modified_fwd(self, walks, masks, targets, attn_mask):
+        walks[walks < 0] += GNNEmbedding.OFFSET + self.config.num_nodes
+        return super().modified_fwd(walks, masks, targets, attn_mask)

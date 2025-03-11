@@ -49,6 +49,7 @@ class Scheduler(LRScheduler):
 
 def simple_sample(x,edges):
     walks = (x[edges] + t.feat_offset).reshape(edges.size(0), -1).long()
+    walks = torch.cat([walks, torch.full((walks.size(0),1), t.MASK)], dim=1)
     masks = torch.zeros(walks.size(), dtype=torch.bool)
     masks[:,-1] = True
 
@@ -61,14 +62,12 @@ def simple_eval(model, tr, to_eval):
     idxs = can_eval.split(EVAL_BS)
 
     preds = torch.zeros(to_eval.edge_index.size(1))
-    preds_one = torch.ones(to_eval.edge_index.size(1))
 
     for idx in tqdm(idxs, desc='Evaluating'):
         edges = to_eval.edge_index[:, idx].T
         walks,masks = simple_sample(tr.x, edges)
         pred = model.predict(walks, masks).to('cpu')
         preds[idx] = pred.squeeze()
-        preds_one[idx] = pred.squeeze()
 
     labels = to_eval.label
     weights = to_eval.edge_attr
@@ -79,20 +78,9 @@ def simple_eval(model, tr, to_eval):
     ap = ap_score(
         labels, preds, sample_weight=weights
     )
-    auc_sus = auc_score(
-        labels, preds_one, sample_weight=weights
-    )
-    ap_sus = ap_score(
-        labels, preds_one, sample_weight=weights
-    )
-    auc_trunc = auc_score(
-        labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
-    )
-    ap_trunc = ap_score(
-        labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
-    )
 
-    return auc,ap, auc_trunc,ap_trunc, auc_sus,ap_sus
+    return auc,ap
+
 @torch.no_grad()
 def evaluate(model, tr, to_eval):
     can_eval = to_eval.edge_index < tr.x.size(0) # Some new nodes we don't know what to do with
@@ -100,8 +88,6 @@ def evaluate(model, tr, to_eval):
     idxs = can_eval.split(EVAL_BS)
 
     preds = torch.zeros(to_eval.edge_index.size(1))
-    preds_one = torch.ones(to_eval.edge_index.size(1))
-
     for idx in tqdm(idxs, desc='Evaluating'):
         edges = to_eval.edge_index[:, idx]
         data = tr.sample(edges.T)
@@ -109,7 +95,6 @@ def evaluate(model, tr, to_eval):
 
         pred = model.predict(walks, masks).to('cpu')
         preds[idx] = pred.squeeze()
-        preds_one[idx] = pred.squeeze()
 
     labels = to_eval.label
     weights = to_eval.edge_attr
@@ -120,20 +105,8 @@ def evaluate(model, tr, to_eval):
     ap = ap_score(
         labels, preds, sample_weight=weights
     )
-    auc_sus = auc_score(
-        labels, preds_one, sample_weight=weights
-    )
-    ap_sus = ap_score(
-        labels, preds_one, sample_weight=weights
-    )
-    auc_trunc = auc_score(
-        labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
-    )
-    ap_trunc = ap_score(
-        labels[can_eval], preds[can_eval], sample_weight=weights[can_eval]
-    )
 
-    return auc,ap, auc_trunc,ap_trunc, auc_sus,ap_sus
+    return auc,ap
 
 
 def simple_train(tr,va,te, model: GraphBertFT):
@@ -149,9 +122,6 @@ def simple_train(tr,va,te, model: GraphBertFT):
     print(updates_per_epoch)
 
     sched = Scheduler(opt, warmup_stop, total_steps)
-
-    with open('ft_log.txt', 'w+') as f:
-        pass
 
     with open('ft_results.txt', 'w+') as f:
             f.write(f'epoch,auc,ap\n')
@@ -186,10 +156,6 @@ def simple_train(tr,va,te, model: GraphBertFT):
                 sched.step()
                 en = time.time()
 
-                # Log epoch
-                with open('ft_log.txt', 'a') as f:
-                    f.write(f'{loss},{updates}\n')
-
                 lr = sched.get_last_lr()[0]
                 print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, {en-st:0.2f}s)')
 
@@ -200,45 +166,43 @@ def simple_train(tr,va,te, model: GraphBertFT):
 
 
         add_fake_data(va)
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = simple_eval(model, tr, va)
+        auc, ap = simple_eval(model, tr, va)
         print('#'*20)
         print(f'VAL SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
         store_best = False
         if ap > best:
             best = ap
             store_best = True
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = simple_eval(model, tr, te)
+        va_auc = auc
+        va_ap = ap
+
+        auc, ap = simple_eval(model, tr, te)
         print('#'*20)
         print(f'TEST SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
         if store_best:
-            best_te = (auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus)
+            best_te = (auc, ap, va_auc, va_ap)
 
         with open('ft_results.txt', 'a') as f:
-            f.write(f'{e+1},{auc},{ap},{auc_trunc},{ap_trunc},{auc_sus},{ap_sus},{loss}\n')
+            f.write(f'{e+1},{auc},{ap},{va_auc},{va_ap}\n')
 
         torch.save(
             model.state_dict(),
             'finetune.pt'
         )
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = best_te
+        auc, ap, va_auc, va_ap = best_te
         print('#'*20)
         print(f'BEST SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"VAL:  AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
+        print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
 def train(tr,va,te, model: GraphBertFT):
     opt = AdamW(
@@ -254,10 +218,7 @@ def train(tr,va,te, model: GraphBertFT):
 
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open('ft_log.txt', 'w+') as f:
-        pass
-
-    with open('ft_results.txt', 'w+') as f:
+    with open(f'ft_results_{SIZE}.txt', 'w+') as f:
             f.write(f'epoch,auc,ap\n')
 
     updates = 0
@@ -287,10 +248,6 @@ def train(tr,va,te, model: GraphBertFT):
                 sched.step()
                 en = time.time()
 
-                # Log epoch
-                with open('ft_log.txt', 'a') as f:
-                    f.write(f'{loss},{updates}\n')
-
                 lr = sched.get_last_lr()[0]
                 print(f'[{updates}-{e}] {loss} (lr: {lr:0.2e}, {en-st:0.2f}s)')
 
@@ -302,45 +259,39 @@ def train(tr,va,te, model: GraphBertFT):
 
 
         add_fake_data(va)
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(model, tr, va)
+        auc, ap = evaluate(model, tr, va)
         print('#'*20)
-        print(f'VAL SCORES')
-        print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"VAL: AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
         store_best = False
         if ap > best:
             best = ap
             store_best = True
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(model, tr, te)
+        val_auc = auc
+        val_ap = ap
+
+        auc, ap = evaluate(model, tr, te)
         print('#'*20)
-        print(f'TEST SCORES')
-        print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"TEST: AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
         if store_best:
-            best_te = (auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus)
+            best_te = (auc, ap, val_auc, val_ap)
 
-        with open('ft_results.txt', 'a') as f:
-            f.write(f'{e+1},{auc},{ap},{auc_trunc},{ap_trunc},{auc_sus},{ap_sus},{loss}\n')
+        with open(f'ft_results_{SIZE}.txt', 'a') as f:
+            f.write(f'{e+1},{auc},{ap},{val_auc},{val_ap},{loss}\n')
 
         torch.save(
             model.state_dict(),
             'finetune.pt'
         )
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = best_te
+        auc, ap, val_auc,val_ap = best_te
         print('#'*20)
         print(f'BEST SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"VAL: AUC: {val_auc:0.4f}, AP: {val_ap:0.4f}")
+        print(f"TEST: AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
 
 def add_fake_data(data, percent=1):
@@ -361,17 +312,12 @@ def add_fake_data(data, percent=1):
 
 if __name__ == '__main__':
     tr = torch.load('data/lanl_tr.pt', weights_only=False)
+    va = torch.load('data/lanl_va.pt', weights_only=False)
     te = torch.load('data/lanl_te.pt', weights_only=False)
-    va = deepcopy(tr)
 
     idx = torch.randperm(tr.edge_index.size(1))
     n_tr = int(idx.size(0) * 0.9)
 
-    # Partition training data into train and val
-    tr.edge_index = tr.edge_index[:, idx[:n_tr]]
-    tr.edge_attr = tr.edge_attr[idx[:n_tr]]
-    va.edge_index = va.edge_index[:, idx[n_tr:]]
-    va.edge_attr = va.edge_attr[idx[n_tr:]]
     va.label = torch.zeros(va.edge_attr.size())
     add_fake_data(va)
 
@@ -380,16 +326,17 @@ if __name__ == '__main__':
     arg.add_argument('--device', type=int, default=0)
     args = arg.parse_args()
 
-    SIZE = 'med' #args.size
-    DEVICE = 0 #args.device
+    SIZE = args.size
+    DEVICE = args.device
 
     params = {
+        'tiny': SimpleNamespace(H=128, L=2, MINI_BS=512),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=512),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=256)
+        'med': SimpleNamespace(H=512, L=8, MINI_BS=512)
     }[SIZE]
     MINI_BS = params.MINI_BS
 
-    tr = SparseGraphSampler(tr, neighbors=25, batch_size=MINI_BS, mode='finetune')
+    tr = SparseGraphSampler(tr, neighbors=15, batch_size=MINI_BS, mode='finetune')
     t = Tokenizer(tr.x)
 
     config = BertConfig(
@@ -397,8 +344,9 @@ if __name__ == '__main__':
         hidden_size=         params.H,
         num_hidden_layers=   params.L,
         num_attention_heads= params.H // 64,
-        intermediate_size=   params.H * 4
+        intermediate_size=   params.H * 4,
+        padding_idx = t.PAD
     )
 
-    model = GraphBertFT(config, f'bert_{SIZE}.pt', device=DEVICE)
+    model = GraphBertFT(config, f'pretrained/bert_{SIZE}.pt', device=DEVICE)
     train(tr,va,te,model)

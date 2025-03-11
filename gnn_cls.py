@@ -13,7 +13,7 @@ from torch_geometric.nn.models import GCN
 
 from tokenizer import Tokenizer
 
-DEVICE=0
+DEVICE=1
 
 @torch.no_grad()
 def evaluate(z, to_eval):
@@ -21,12 +21,10 @@ def evaluate(z, to_eval):
     idx = can_eval.prod(dim=0).nonzero().squeeze()
 
     preds = torch.zeros(to_eval.edge_index.size(1))
-    preds_one = torch.ones(to_eval.edge_index.size(1))
 
     edges = to_eval.edge_index[:, idx]
     pred = 1 - torch.sigmoid((z[edges[0]] * z[edges[1]]).sum(dim=1))
     preds[idx] = pred.squeeze().cpu()
-    preds_one[idx] = pred.squeeze().cpu()
 
     labels = to_eval.label
     weights = to_eval.edge_attr
@@ -37,51 +35,51 @@ def evaluate(z, to_eval):
     ap = ap_score(
         labels, preds, sample_weight=weights
     )
-    auc_sus = auc_score(
-        labels, preds_one, sample_weight=weights
-    )
-    ap_sus = ap_score(
-        labels, preds_one, sample_weight=weights
-    )
-    auc_trunc = auc_score(
-        labels[idx], preds[idx], sample_weight=weights[idx]
-    )
-    ap_trunc = ap_score(
-        labels[idx], preds[idx], sample_weight=weights[idx]
-    )
 
-    return auc,ap, auc_trunc,ap_trunc, auc_sus,ap_sus
+    return auc,ap
 
 def train(tr,va,te):
-    model = GCN(tr.x.size(1), tr.x.size(1)*2, num_layers=2).to(DEVICE)
+
+    class MyGCN(nn.Module):
+        def __init__(self, x, num_layers=3):
+            super().__init__()
+
+            #self.emb = nn.Embedding(x.size(0), x.size(1))
+            #self.emb.weight = nn.Parameter(x)
+            self.x = x
+            print(self.x)
+            self.gcn = GCN(x.size(1), x.size(1)*2, num_layers=num_layers)
+
+        def forward(self, ei):
+            return self.gcn(self.x, ei)
+
+    model = MyGCN(tr.x, num_layers=3).to(DEVICE)
     opt = Adam(model.parameters(), lr=0.001)
     bce = nn.BCEWithLogitsLoss()
 
     # Test no training
     add_fake_data(va)
-    auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(tr.x, va)
+    auc, ap = evaluate(tr.x, va)
     print('#'*20)
     print(f'VAL SCORES')
     print('#'*20)
-    print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-    print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-    print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
-    auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(tr.x, te)
+    auc, ap = evaluate(tr.x, te)
     print('#'*20)
     print(f'TEST SCORES')
     print('#'*20)
-    print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-    print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-    print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+    print(f"AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
+    with open(f'gnn_ft_results_{SIZE}.txt', 'w+') as f:
+        pass
 
     best = 0
     best_te = None
-    for e in range(1000):
+    for e in range(100):
         opt.zero_grad()
         model.train()
-        z = model(tr.x, tr.edge_index)
+        z = model(tr.edge_index)
 
         targets = torch.cat([
             tr.edge_index,
@@ -99,43 +97,35 @@ def train(tr,va,te):
 
         model.eval()
         with torch.no_grad():
-            z = model(tr.x, tr.edge_index)
+            z = model(tr.edge_index)
 
         add_fake_data(va)
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(z, va)
+        auc, ap = evaluate(z, va)
         print('#'*20)
-        print(f'VAL SCORES')
-        print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f'VAL:  AUC: {auc:0.4f}, AP:  {ap:0.4f}')
 
         store_best = False
         if ap > best:
             best = ap
             store_best = True
+        va_auc = auc
+        va_ap = ap
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = evaluate(z, te)
-        print('#'*20)
-        print(f'TEST SCORES')
-        print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        auc, ap = evaluate(z, te)
+        print(f'TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}')
 
         if store_best:
-            best_te = (auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus)
+            best_te = (auc, ap, va_auc, va_ap)
 
-        with open('ft_results.txt', 'a') as f:
-            f.write(f'{e+1},{auc},{ap},{auc_trunc},{ap_trunc},{auc_sus},{ap_sus},{loss}\n')
+        with open(f'gnn_ft_results_{SIZE}.txt', 'a') as f:
+            f.write(f'{e+1},{auc},{ap},{va_auc},{va_ap}\n')
 
-        auc, ap, auc_trunc, ap_trunc, auc_sus, ap_sus = best_te
+        auc, ap, va_auc, va_ap = best_te
         print('#'*20)
         print(f'BEST SCORES')
         print('#'*20)
-        print(f"AUC (full dataset):     {auc:0.4f}, AP: {ap:0.4f}")
-        print(f"AUC (ignore missing):   {auc_trunc:0.4f}, AP: {ap_trunc:0.4f}")
-        print(f"AUC (missing are anom): {auc_sus:0.4f}, AP: {ap_sus:0.4f}")
+        print(f"VAL:  AUC: {va_auc:0.4f}, AP: {va_ap:0.4f}")
+        print(f"TEST: AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
 def set_x(graph_x, bert_x):
     t = Tokenizer(graph_x)
@@ -159,17 +149,9 @@ def add_fake_data(data, percent=1):
 
 if __name__ == '__main__':
     tr = torch.load('data/lanl_tr.pt', weights_only=False)
+    va = torch.load('data/lanl_va.pt', weights_only=False)
     te = torch.load('data/lanl_te.pt', weights_only=False)
-    va = deepcopy(tr)
 
-    idx = torch.randperm(tr.edge_index.size(1))
-    n_tr = int(idx.size(0) * 0.9)
-
-    # Partition training data into train and val
-    tr.edge_index = tr.edge_index[:, idx[:n_tr]]
-    tr.edge_attr = tr.edge_attr[idx[:n_tr]]
-    va.edge_index = va.edge_index[:, idx[n_tr:]]
-    va.edge_attr = va.edge_attr[idx[n_tr:]]
     va.label = torch.zeros(va.edge_attr.size())
     add_fake_data(va)
 
@@ -178,16 +160,17 @@ if __name__ == '__main__':
     arg.add_argument('--device', type=int, default=0)
     args = arg.parse_args()
 
-    SIZE = 'mini' #args.size
-    DEVICE = 0 #args.device
+    SIZE = args.size
+    DEVICE = 1 #args.device
 
     params = {
+        'tiny': SimpleNamespace(H=128, L=2, MINI_BS=512),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=512),
         'med': SimpleNamespace(H=512, L=8, MINI_BS=128)
     }[SIZE]
     MINI_BS = params.MINI_BS
 
-    weights = torch.load(f'bert_{SIZE}.pt', weights_only=True, map_location='cpu')
+    weights = torch.load(f'pretrained/bert_{SIZE}.pt', weights_only=True, map_location='cpu')
     x = weights['cls.predictions.decoder.weight']
     x = set_x(tr.x, x)
 

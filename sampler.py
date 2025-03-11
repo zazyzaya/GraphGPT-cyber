@@ -11,6 +11,7 @@ class SparseGraphSampler():
     def __init__(self, data: Data, adj_t: SparseTensor=None, depth=1, neighbors=15, reindex=False, batch_size=64, mode='pretrain'):
         self.data = data
         self.x = data.x
+        num_nodes = data.edge_index.max() + 1
 
         assert hasattr(data, "edge_index")
         if adj_t is None:
@@ -25,7 +26,7 @@ class SparseGraphSampler():
                 row=row,
                 col=col,
                 value=value,
-                sparse_sizes=(data.num_nodes, data.num_nodes),
+                sparse_sizes=(num_nodes, num_nodes),
             ).t()
 
         self.adj_t = adj_t
@@ -66,7 +67,7 @@ class SparseGraphSampler():
         data.seed_node = index
         data.edge_index = edge_index
         data.nids = n_id_unique
-        data.x = self.x[n_id_unique]
+        data.x = self.x[n_id_unique % self.x.size(0)]
 
         return data
 

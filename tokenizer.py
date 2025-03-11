@@ -7,9 +7,13 @@ import torch
 import networkx as nx
 from torch_geometric.utils import to_networkx
 
+from models.gnn_bert import GNNEmbedding
+
+
 class Tokenizer():
-    def __init__(self, x, max_path_len=256):
+    def __init__(self, x, simple=False, max_path_len=512):
         self.max_path_len = max_path_len
+        self.simple = simple
 
         max_feats = x.max(dim=0).values.long()
         feat_offset = [0]
@@ -30,14 +34,14 @@ class Tokenizer():
 
         self.vocab_size = self.MASK + 1
 
-    def set_mask_rate(self, percent_done, fixed_rate=0.7, decay_type='poly'):
+    def set_mask_rate(self, percent_done, fixed_rate=0.7, min_rate=0.15, decay_type='poly'):
         # Use polynomial annealing as in GraphGPT PPA settings
         if decay_type == 'cos':
             anneal = math.cos( percent_done * (math.pi / 2) )
         elif decay_type == 'poly':
             anneal = 1 - (percent_done ** 2)
 
-        self.mask_rate = anneal * fixed_rate
+        self.mask_rate = max(anneal * fixed_rate, min_rate)
 
     def _mask_nodes(self, nids, seq):
         to_mask = (seq[:,0] == nids).sum(dim=0).bool()
@@ -56,6 +60,64 @@ class Tokenizer():
 
         seq[to_mask] = self.MASK
         return seq,tgt,predict_idx
+
+    def _simple_tokenize(self, data, mask):
+        '''
+        Expects data object of subgraph with attrs
+            x: N x 2 matrix of nodetype and node id (uq to the type)
+            ei: edge index
+        '''
+        g = to_networkx(data, to_undirected=True)
+        if not nx.is_eulerian(g):
+            ccs = [g.subgraph(g_).copy() for g_ in nx.connected_components(g)]
+            ccs = [nx.eulerize(cc) for cc in ccs]
+        else:
+            ccs = [g]
+
+        seqs = []
+        feats = []
+        for cc in ccs:
+            if len(cc) == 1:
+                path = [n for n in cc.nodes]
+            else:
+                path_ = [p for p in nx.eulerian_path(cc)]
+                path = [p[0] for p in path_] + [path_[-1][1]]
+
+            seqs.append(torch.tensor(path))
+
+            x = data.x[path] + self.feat_offset
+            feat = torch.cat([x, torch.full((len(path),1), -1)], dim=1)
+            feat[-1, -1] = self.JUMP
+            feats.append(feat)
+
+
+        seq_join = torch.cat(seqs)
+        feat_join = torch.cat(feats)
+        tokens = torch.cat([seq_join.unsqueeze(-1), feat_join], dim=1).long()
+
+        # Use path indexes
+        offset = randint(0,self.max_path_len)
+        tokens[:, 0] += offset
+        tokens[:, 0] %= self.max_path_len
+        tokens[:, 0] += self.IDX
+
+        if mask:
+            nids = tokens[:,0].unique()
+            to_mask = torch.rand(nids.size()) < self.mask_rate
+            nids = nids[to_mask].unsqueeze(-1)
+            seq,tgt,tgt_idx = self._mask_nodes(nids, tokens)
+
+        # Remove node ids. Use node features explicitly
+        seq = seq[:, 1:]
+
+        seq = tokens.view(-1)
+        remove_dupes = seq != -1
+        seq = seq[remove_dupes]
+        seq[-1] = self.EOS
+
+        if mask:
+            return seq, tgt, tgt_idx.view(-1)[remove_dupes]
+        return seq
 
     def _tokenize_one(self, data, mask):
         '''
@@ -124,9 +186,14 @@ class Tokenizer():
         return seq
 
     def tokenize_and_mask(self, subgraphs):
-        out = Parallel(prefer='processes', n_jobs=16)(
-            delayed(self._tokenize_one)(sg, True) for sg in subgraphs
-        )
+        if not self.simple:
+            out = Parallel(prefer='processes', n_jobs=16)(
+                delayed(self._tokenize_one)(sg, True) for sg in subgraphs
+            )
+        else:
+            out = Parallel(prefer='processes', n_jobs=16)(
+                delayed(self._simple_tokenize)(sg, True) for sg in subgraphs
+            )
 
         seqs,tgts,tgt_idx = zip(*out)
         out_seqs = torch.full(
@@ -165,6 +232,30 @@ class Tokenizer():
             mask[i, seq.size(0) + pred_edge.size(1) - 1] = True
 
         return out_seqs, mask
+
+
+class RWTokenizer(Tokenizer):
+    def __init__(self, x):
+        super().__init__(x)
+        self.num_nodes = x.size(0)
+
+    def mask(self, rws):
+        attn_mask = rws != GNNEmbedding.PAD
+        to_perturb = torch.rand(rws.size()) < self.mask_rate
+        to_perturb = to_perturb.logical_and(attn_mask)
+
+        tgts = rws[to_perturb]
+
+        idxs = to_perturb.nonzero()
+        prm = torch.randperm(idxs.size(0))
+
+        to_mask = idxs[prm[:int(prm.size(0)*0.8)]]
+        to_swap = idxs[prm[int(prm.size(0)*0.9):]]
+
+        rws[to_mask[:,0], to_mask[:,1]] = GNNEmbedding.MASK
+        rws[to_swap[:,0], to_swap[:,1]] = torch.randint(0, self.num_nodes, (to_swap.size(0),))
+
+        return rws, to_perturb, tgts, attn_mask
 
 
 if __name__ == '__main__':
