@@ -1,0 +1,10 @@
+python rw_finetune.py --size tiny --device 1 --walk-len 2
+python rw_finetune.py --size mini --device 1 --walk-len 2
+python rw_finetune.py --size tiny --device 1 --walk-len 4
+python rw_finetune.py --size mini --device 1 --walk-len 4
+python rw_finetune.py --size tiny --device 1 --walk-len 6
+python rw_finetune.py --size mini --device 1 --walk-len 6
+python rw_finetune.py --size tiny --device 1 --walk-len 8
+python rw_finetune.py --size mini --device 1 --walk-len 8
+python rw_finetune.py --size tiny --device 1 --walk-len 10
+python rw_finetune.py --size mini --device 1 --walk-len 10

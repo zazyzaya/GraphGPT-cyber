@@ -1,6 +1,7 @@
 import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected, remove_self_loops
+from torch_cluster import random_walk
 
 from models.gnn_bert import GNNEmbedding
 

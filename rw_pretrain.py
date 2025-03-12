@@ -108,7 +108,7 @@ def train(g: RWSampler, model: BERT):
         e += 1
 
     torch.save(
-        (model.args, model.kwargs, model.state_dict()),
+        model.state_dict(),
         f'bert_{SIZE}.pt'
     )
 
