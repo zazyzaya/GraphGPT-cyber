@@ -184,8 +184,7 @@ def to_torch(partition='tr', dicts=None):
 
 def full_to_tgraph(delta=60*60):
     nid = dict(); users = dict(); computers = dict(); other = dict()
-    edges = defaultdict(lambda : 0); labels = defaultdict(lambda : 0)
-    eis = []; ews = []; label_t = []
+    csr = defaultdict(lambda : [[],[],[]])
 
     def get_or_add(v, d):
         if (nid := d.get(v)) is None:
@@ -203,36 +202,12 @@ def full_to_tgraph(delta=60*60):
 
         return get_or_add(n, nid)
 
-    def store_edge_index():
-        nonlocal edges, labels, eis, ews, label_t
-
-        src,dst,weight,label = [],[],[],[]
-        for (s,d),v in edges.items():
-            src.append(s)
-            dst.append(d)
-            weight.append(v)
-            label.append(labels[(s,d)])
-
-        eis.append(torch.tensor([src,dst], dtype=torch.long))
-        ews.append(torch.tensor(weight))
-        label_t.append(torch.tensor(label))
-
-        edges = defaultdict(lambda : 0)
-        labels = defaultdict(lambda : 0)
-
-
     f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
-    t = 1
     line = f.readline()
     prog = tqdm(desc='Train', total=2211245)
     while line:
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
-
-        # Break into new graph
-        if ts >= t * delta:
-            store_edge_index()
-            t += 1
 
         # Ignore anonymous login
         if src.startswith("ANON"):
@@ -242,7 +217,8 @@ def full_to_tgraph(delta=60*60):
         src = sort_node(src)
         dst = sort_node(dst)
 
-        edges[(src,dst)] += 1
+        csr[src][0].append(dst)
+        csr[src][1].append(ts)
 
         prog.update()
         line = f.readline()
@@ -250,11 +226,6 @@ def full_to_tgraph(delta=60*60):
     prog.close()
     f.close()
 
-    if edges:
-        store_edge_index()
-
-    # Only use temporal graphs for tr/va as memory constraints
-    # get really crazy with the remaining data
     f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
     line = f.readline()
     prog = tqdm(desc='Test', total=75657132)
@@ -271,17 +242,19 @@ def full_to_tgraph(delta=60*60):
         src = sort_node(src)
         dst = sort_node(dst)
 
-        edges[(src,dst)] += 1
-        labels[(src,dst)] = max(labels[(src,dst)], label)
+        csr[src][0].append(dst)
+        csr[src][1].append(ts)
+
+        # Only store index of anomalous edges to save space
+        if label:
+            idx = len(csr[src][0])-1
+            csr[src][2].append(idx)
 
         prog.update()
         line = f.readline()
 
     prog.close()
     f.close()
-
-    # Test set saved as one big static graph
-    store_edge_index()
 
     # Do this at the end so all sections of the graph
     # agree on node mappings
@@ -297,48 +270,79 @@ def full_to_tgraph(delta=60*60):
      # String repr of nodes (e.g. C123)
     names = [k for k in nid.keys()]
 
-    eis, te_ei = eis[:-1], eis[-1]
-    ews, te_ew = ews[:-1], ews[-1]
-    label_t = label_t[-1]
+    idxptr = [0]
+    col = []
+    ts = []
+    is_mal = []
+    for i in tqdm(range(x.size(0))):
+        neighbors,t,label = csr[i]
+        col += neighbors
+        ts += t
 
-    # Stick all edges together. Offset disjoint temporal graphs by num_nodes
-    # E.g. (0,1) at t=2 with N=5 -> (10,11)
-    num_nodes = x.size(0)
-    for i in range(len(eis)):
-        eis[i] += num_nodes*i
+        if label:
+            is_mal += [t_ + idxptr[-1] for t_ in t]
 
-    tr_ei = torch.cat(eis, dim=1)
-    tr_ew = torch.cat(ews)
+        idxptr.append(len(neighbors) + idxptr[-1])
+        del csr[i]
 
-    # Pull out 10% for validation
-    idx = torch.randperm(tr_ei.size(1))
-    va_idx = idx[:int(idx.size(0)*0.1)]
-    tr_idx = idx[int(idx.size(0)*0.1):]
-
-    va_ei = tr_ei[:, va_idx]
-    va_ew = tr_ew[va_idx]
-    tr_ei = tr_ei[:, tr_idx]
-    tr_ew = tr_ew[tr_idx]
-
-    return Data(
-        x=x, edge_index=tr_ei,
-        edge_attr=tr_ew, num_nodes=x.size(0),
-        true_num_nodes=num_nodes,
-        num_snapshots=len(eis),
-        names=names
-    ), Data(
-        x=x, edge_index=va_ei,
-        edge_attr=va_ew, num_nodes=x.size(0),
-        true_num_nodes=num_nodes,
-        num_snapshots=len(eis),
-        names=names
-    ), Data(
-        x=x, edge_index=te_ei,
-        edge_attr=te_ew, num_nodes=x.size(0),
-        true_num_nodes=num_nodes,
-        names=names, label=label
+    torch.save(
+        Data(
+            x = x,
+            idxptr = torch.tensor(idxptr),
+            col = torch.tensor(col),
+            ts = torch.tensor(ts),
+            is_mal = torch.tensor(is_mal),
+            names = names
+        ),
+        'data/lanl_tgraph_csr.pt'
     )
 
+def partition_tgraph():
+    g = torch.load('data/lanl_tgraph_csr.pt', weights_only=False)
+
+    idxs = torch.randperm(g.col.size(0))
+    tr_end = int(idxs.size(0) * 0.8)
+    va_end = int(idxs.size(0) * 0.9)
+
+    tr = torch.zeros(g.col.size(0), dtype=torch.bool)
+    va = torch.zeros_like(tr)
+    te = torch.zeros_like(tr)
+
+    tr[idxs[:tr_end]] = True
+    va[idxs[tr_end:va_end]] = True
+    te[idxs[va_end:]] = True
+
+    # Mask out anomalies so they're all in test set
+    tr[g.is_mal] = False
+    va[g.is_mal] = False
+    te[g.is_mal] = True
+
+    # Generate new index pointer for subset of column that was selected
+    def reindex(idxptr, subset_mask):
+        new_ptr = [0]
+        for i in range(1, idxptr.size(0)):
+            st = idxptr[i-1]; en = idxptr[i]
+            selected = subset_mask[st:en].sum().item()
+            new_ptr.append(selected)
+
+        return torch.tensor(new_ptr)
+
+    for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
+        new_ptr = reindex(g.idxptr, tr)
+        data = Data(
+            x = g.x,
+            idxptr = new_ptr,
+            col = g.col[mask],
+            ts = g.ts[mask]
+        )
+
+        if name == 'te':
+            label = torch.zeros(mask.size(0))
+            label[g.is_mal] = 1
+            label = label[mask]
+            data.label = label
+
+        torch.save(data, f'data/lanl_tgraph_{name}.pt')
 
 def full_to_torch():
     nid = dict(); users = dict(); computers = dict(); other = dict()
@@ -505,8 +509,5 @@ def load_full_tr():
     torch.save(g, 'data/lanl_continuous_tgraph_tr.pt')
 
 if __name__ == '__main__':
-    #parse_auth()
-    tr,va,te = full_to_tgraph()
-    torch.save(tr, 'data/lanl_tgraph_tr.pt')
-    torch.save(va, 'data/lanl_tgraph_va.pt')
-    torch.save(te, 'data/lanl_tgraph_te.pt')
+    full_to_tgraph()
+    partition_tgraph()
