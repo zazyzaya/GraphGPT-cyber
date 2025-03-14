@@ -464,10 +464,45 @@ def partition_full():
     torch.save(te, 'data/lanl_te.pt')
 
 
-def load_yelp():
-    from scipy.io import loadmat
-    mat = loadmat('data/YelpChi.mat')
-    print('woo')
+def load_full_tr():
+    full = torch.load('data/lanl_full.pt', weights_only=False)
+    mapping = {n:i for i,n in enumerate(full.names)}
+    x = full.x
+
+    f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
+    srcs,dsts,ts = [],[],[]
+
+    line = f.readline()
+    prog = tqdm(total=2211245)
+    while line:
+        src,dst,t,_ = line.split(',')
+
+        # Ignore anonymous login
+        if src.startswith("ANON"):
+            line = f.readline()
+            continue
+
+        src = mapping[src]
+        dst = mapping[dst]
+        t = int(t)
+
+        srcs.append(src)
+        dsts.append(dst)
+        ts.append(t)
+
+        prog.update()
+        line = f.readline()
+
+    prog.close()
+    f.close()
+
+    g = Data(
+        x = x,
+        edge_index = torch.tensor([src,dst]),
+        edge_attr = torch.tensor(ts)
+    )
+
+    torch.save(g, 'data/lanl_continuous_tgraph_tr.pt')
 
 if __name__ == '__main__':
     #parse_auth()

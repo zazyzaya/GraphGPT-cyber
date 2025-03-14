@@ -9,6 +9,7 @@ class RWSampler():
     def __init__(self, data: Data, walk_len=64, n_walks=4, batch_size=64):
         self.data = data
         self.x = data.x
+        self.edge_index = data.edge_index
 
         self.num_nodes = data.x.size(0)
         self.walk_len = walk_len

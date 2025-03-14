@@ -42,11 +42,13 @@ class GNNEmbedding(nn.Module):
     OFFSET = 2
 
     def __init__(self, config):
-        super().__init__(config=config)
+        super().__init__()
         self.gnn = GCN(config.hidden_size, config.hidden_size, config.gnn_layers)
-        self.word_embeddings = nn.Embedding(2, config.hidden_size)
+        self.word_embeddings = nn.Embedding(2 + config.num_nodes, config.hidden_size)
+        self.config = config
 
-    def forward(self, x, ei, seq):
+    def forward(self, ei, seq):
+        x = self.word_embeddings(torch.arange(self.config.num_nodes, device=self.config.device))
         z = self.gnn(x,ei)
 
         embs = torch.zeros(
@@ -58,7 +60,7 @@ class GNNEmbedding(nn.Module):
 
         # Use GNN output as embedding for any nodes
         embs[nodes] = z[seq[nodes]]
-        embs[~special] = self.word_embeddings(seq[special]+self.OFFSET)
+        embs[special] = self.word_embeddings(seq[special]+self.OFFSET+self.config.num_nodes)
 
         return embs
 
@@ -89,8 +91,10 @@ class GNNBert(BertPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
 
-    def modified_fwd(self, x,ei, walks, masks, targets, attn_mask):
+    def modified_fwd(self, ei, walks, masks, targets, attn_mask, return_loss=True):
         input_ids = walks.to(self.device)
+        ei = ei.to(self.device)
+
         tgt = torch.full(masks.size(), -100)
         tgt[masks] = targets
         tgt = tgt.to(self.device)
@@ -99,13 +103,20 @@ class GNNBert(BertPreTrainedModel):
             device=self.device).repeat(tgt.size(0), 1
         )
 
-        input_embs = self.gnn(x,ei, walks)
+        input_embs = self.gnn(ei, input_ids)
+
+        if isinstance(attn_mask, torch.Tensor):
+            attn_mask = attn_mask.to(self.device)
 
         out = self.forward(
-            input_ids, labels=tgt, position_ids=pos_ids, inputs_embeds=input_embs,
-            return_dict=True, attention_mask=attn_mask.to(self.device)
+            labels=tgt, position_ids=pos_ids, inputs_embeds=input_embs,
+            return_dict=True, attention_mask=attn_mask
         )
-        return out.loss
+
+        if return_loss:
+            return out.loss
+        else:
+            return out
 
     def forward(
         self,
@@ -133,16 +144,7 @@ class GNNBert(BertPreTrainedModel):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-        if len(input_ids.shape) == 3:
-            inputs_embeds = self.bert.embeddings.word_embeddings(input_ids)
-            # [bz, seq, feat, dim]
-            inputs_embeds = torch.sum(inputs_embeds, dim=-2)
-            # [bz, seq, dim]
-            assert inputs_embeds.shape[:2] == input_ids.shape[:2]
-            input_ids = None
-
         outputs = self.bert(
-            input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,

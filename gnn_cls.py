@@ -71,7 +71,7 @@ def train(tr,va,te):
     print('#'*20)
     print(f"AUC: {auc:0.4f}, AP: {ap:0.4f}")
 
-    with open(f'gnn_ft_results_{SIZE}.txt', 'w+') as f:
+    with open(f'results/rw/gnn_ft_results_{SIZE}.txt', 'w+') as f:
         pass
 
     best = 0
@@ -117,7 +117,7 @@ def train(tr,va,te):
         if store_best:
             best_te = (auc, ap, va_auc, va_ap)
 
-        with open(f'gnn_ft_results_{SIZE}.txt', 'a') as f:
+        with open(f'results/rw/gnn_ft_results_{SIZE}.txt', 'a') as f:
             f.write(f'{e+1},{auc},{ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap = best_te
@@ -161,7 +161,7 @@ if __name__ == '__main__':
     args = arg.parse_args()
 
     SIZE = args.size
-    DEVICE = 1 #args.device
+    DEVICE = args.device
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=512),
@@ -170,10 +170,16 @@ if __name__ == '__main__':
     }[SIZE]
     MINI_BS = params.MINI_BS
 
-    weights = torch.load(f'pretrained/bert_{SIZE}.pt', weights_only=True, map_location='cpu')
-    x = weights['cls.predictions.decoder.weight']
-    x = set_x(tr.x, x)
+    weights = torch.load(f'pretrained/static_graph/rw_sampling/bert_{SIZE}.pt', weights_only=True, map_location='cpu')
+    #x = weights['cls.predictions.decoder.weight']
+    x = weights['bert.embeddings.word_embeddings.weight']
+    #x = set_x(tr.x, x)
+
+    from torch_geometric.utils import add_remaining_self_loops, to_undirected
+    ei = tr.edge_index
+    ei = add_remaining_self_loops(ei)[0]
+    #ei = to_undirected(ei)
 
     tr.x = x.to(DEVICE)
-    tr.edge_index = tr.edge_index.to(DEVICE)
+    tr.edge_index = ei.to(DEVICE)
     train(tr,va,te)
