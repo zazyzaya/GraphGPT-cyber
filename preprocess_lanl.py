@@ -55,7 +55,7 @@ def parse_auth():
         if not opened_test:
             out_f.write(
                 ','.join([
-                    src_u, src_c,
+                    src_u, dst,
                     tokens[TS], tokens[SUCCESS][0]
                 ]) + '\n' + ','.join([
                     src_c, dst,
@@ -74,7 +74,7 @@ def parse_auth():
 
             out_f.write(
                 ','.join([
-                    src_u, src_c,
+                    src_u, dst,
                     tokens[TS], tokens[SUCCESS][0],
                     is_mal
                 ]) + '\n' + ','.join([
@@ -214,15 +214,17 @@ def full_to_tgraph(delta=60*60):
             line = f.readline()
             continue
 
-        src = sort_node(src)
-        dst = sort_node(dst)
+        # Only consider user-generated activity (as in Pikachu paper)
+        if src.startswith('U'):
+            src = sort_node(src)
+            dst = sort_node(dst)
 
-        # Needs to be bi-directional otherwise RW doesn't work
-        # bc it's a bipartite graph of U -> C
-        csr[src][0].append(dst)
-        csr[src][1].append(ts)
-        csr[dst][0].append(src)
-        csr[dst][1].append(ts)
+            # Needs to be bi-directional otherwise RW doesn't work
+            # bc it's a bipartite graph of U -> C
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[dst][0].append(src)
+            csr[dst][1].append(ts)
 
         prog.update()
         line = f.readline()
@@ -233,6 +235,7 @@ def full_to_tgraph(delta=60*60):
     f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
     line = f.readline()
     prog = tqdm(desc='Test', total=75657132)
+
     while line:
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
@@ -243,18 +246,19 @@ def full_to_tgraph(delta=60*60):
             line = f.readline()
             continue
 
-        src = sort_node(src)
-        dst = sort_node(dst)
+        if src.startswith('U'):
+            src = sort_node(src)
+            dst = sort_node(dst)
 
-        csr[src][0].append(dst)
-        csr[src][1].append(ts)
-        csr[dst][0].append(src)
-        csr[dst][1].append(ts)
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[dst][0].append(src)
+            csr[dst][1].append(ts)
 
-        # Only store index of anomalous edges to save space
-        if label:
-            idx = len(csr[src][0])-1
-            csr[src][2].append(idx)
+            # Only store index of anomalous edges to save space
+            if label:
+                idx = len(csr[src][0])-1
+                csr[src][2].append(idx)
 
         prog.update()
         line = f.readline()
@@ -286,7 +290,7 @@ def full_to_tgraph(delta=60*60):
         ts += t
 
         if label:
-            is_mal += [t_ + idxptr[-1] for t_ in t]
+            is_mal += [l + idxptr[-1] for l in label]
 
         idxptr.append(len(neighbors) + idxptr[-1])
         del csr[i]
@@ -515,5 +519,6 @@ def load_full_tr():
     torch.save(g, 'data/lanl_continuous_tgraph_tr.pt')
 
 if __name__ == '__main__':
+    #parse_auth()
     full_to_tgraph()
     partition_tgraph()

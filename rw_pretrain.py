@@ -84,7 +84,7 @@ def train(g: TRWSampler, model: BERT):
                 with open(f'rw_bertlog_{SIZE}.txt', 'a') as f:
                     f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
 
-                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f}, {en-st:0.2f}s)')
+                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} (max: {mb.size(1)}), {en-st:0.2f}s)')
 
 
                 st = time.time()
@@ -120,6 +120,7 @@ if __name__ == '__main__':
     arg = ArgumentParser()
     arg.add_argument('--size', default='NO INPUT')
     arg.add_argument('--device', type=int, default=0)
+    arg.add_argument('--temporal', action='store_true')
     args = arg.parse_args()
 
     SIZE = args.size
@@ -127,7 +128,7 @@ if __name__ == '__main__':
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=1024)
+        'med': SimpleNamespace(H=512, L=8, MINI_BS=512)
     }[SIZE]
 
     MINI_BS = params.MINI_BS

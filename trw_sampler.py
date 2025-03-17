@@ -42,3 +42,22 @@ class TRWSampler():
 
         for b in batches:
             yield self.rw(b)
+
+class RWSampler(TRWSampler):
+    def rw(self, batch, p=1, q=1):
+        batch = batch.repeat(self.n_walks)
+        walks,eids = torch.ops.torch_cluster.random_walk(
+            self.rowptr, self.col, batch.to(self.device),
+            self.walk_len, p, q
+        )
+
+        pad = eids == -1
+        pad[:, 0] = False
+        walks[:, 1:][pad] = GNNEmbedding.PAD
+
+        # If no walks went to full walk_len, trim them down to save mem
+        whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
+        whole_col = torch.cat([torch.tensor([True], device=whole_col.device), whole_col])
+        walks = walks[:, whole_col]
+
+        return walks
