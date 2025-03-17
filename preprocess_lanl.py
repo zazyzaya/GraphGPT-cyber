@@ -217,8 +217,12 @@ def full_to_tgraph(delta=60*60):
         src = sort_node(src)
         dst = sort_node(dst)
 
+        # Needs to be bi-directional otherwise RW doesn't work
+        # bc it's a bipartite graph of U -> C
         csr[src][0].append(dst)
         csr[src][1].append(ts)
+        csr[dst][0].append(src)
+        csr[dst][1].append(ts)
 
         prog.update()
         line = f.readline()
@@ -244,6 +248,8 @@ def full_to_tgraph(delta=60*60):
 
         csr[src][0].append(dst)
         csr[src][1].append(ts)
+        csr[dst][0].append(src)
+        csr[dst][1].append(ts)
 
         # Only store index of anomalous edges to save space
         if label:

@@ -241,7 +241,7 @@ class RWTokenizer(Tokenizer):
 
     def mask(self, rws):
         attn_mask = rws != GNNEmbedding.PAD
-        to_perturb = torch.rand(rws.size()) < self.mask_rate
+        to_perturb = torch.rand(rws.size(), device=rws.device) < self.mask_rate
         to_perturb = to_perturb.logical_and(attn_mask)
 
         tgts = rws[to_perturb]
@@ -253,7 +253,7 @@ class RWTokenizer(Tokenizer):
         to_swap = idxs[prm[int(prm.size(0)*0.9):]]
 
         rws[to_mask[:,0], to_mask[:,1]] = GNNEmbedding.MASK
-        rws[to_swap[:,0], to_swap[:,1]] = torch.randint(0, self.num_nodes, (to_swap.size(0),))
+        rws[to_swap[:,0], to_swap[:,1]] = torch.randint(0, self.num_nodes, (to_swap.size(0),), device=rws.device)
 
         return rws, to_perturb, tgts, attn_mask
 

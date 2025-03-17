@@ -9,10 +9,11 @@ from transformers import BertConfig
 
 from models.gnn_bert import RWBert as BERT, GNNEmbedding
 from rw_sampler import RWSampler
+from trw_sampler import TRWSampler
 from tokenizer import RWTokenizer
 
 WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-TOTAL_T = 10 ** 9           #(originally 10**10)
+TOTAL_T = 10 ** 8           #(originally 10**10)
 FIXED_SMTP_RATE = 0.7
 
 WALK_LEN = 64
@@ -33,13 +34,14 @@ class Scheduler(LRScheduler):
 
 def minibatch(mb, model: BERT):
     walks,masks,targets,attn_mask = t.mask(mb)
+    token_count = (walks != GNNEmbedding.PAD).sum()
+
     loss = model.modified_fwd(walks, masks, targets, attn_mask)
     loss.backward()
 
-    token_count = (walks != GNNEmbedding.PAD).sum()
     return loss, token_count
 
-def train(g: RWSampler, model: BERT):
+def train(g: TRWSampler, model: BERT):
     opt = AdamW(
         model.parameters(), lr=3e-4,
         betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1
@@ -82,7 +84,7 @@ def train(g: RWSampler, model: BERT):
                 with open(f'rw_bertlog_{SIZE}.txt', 'a') as f:
                     f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
 
-                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, {en-st:0.2f}s)')
+                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f}, {en-st:0.2f}s)')
 
 
                 st = time.time()
@@ -125,16 +127,15 @@ if __name__ == '__main__':
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=256)
+        'med': SimpleNamespace(H=512, L=8, MINI_BS=1024)
     }[SIZE]
 
     MINI_BS = params.MINI_BS
 
-    g = torch.load('data/lanl_tr.pt', weights_only=False)
-    g = RWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS)
+    g = torch.load('data/lanl_tgraph_tr.pt', weights_only=False)
+    g = TRWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)
-
 
     config = BertConfig(
         g.x.size(0) + GNNEmbedding.OFFSET,

@@ -56,7 +56,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
 
     def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True):
         input_ids = walks.to(self.device)
-        tgt = torch.full(masks.size(), -100)
+        tgt = torch.full(masks.size(), -100, device=masks.device)
         tgt[masks] = targets
         tgt = tgt.to(self.device)
         pos_ids = torch.arange(
