@@ -18,7 +18,6 @@ FIXED_SMTP_RATE = 0.7
 
 WALK_LEN = 64
 N_WALKS = 16
-MINI_BS = 256
 BS = 1024
 
 class Scheduler(LRScheduler):
@@ -47,9 +46,8 @@ def train(g: TRWSampler, model: BERT):
         betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1
     )
     sched = Scheduler(opt)
-    next_checkpoint = 1
 
-    with open(f'rw_bertlog_{SIZE}.txt', 'w+') as f:
+    with open(f'{OUT_F}log_{SIZE}.txt', 'w+') as f:
         pass
 
     updates = 1
@@ -70,7 +68,7 @@ def train(g: TRWSampler, model: BERT):
                 sched.step()
 
                 processed_tokens += tokens
-                t.set_mask_rate(processed_tokens / TOTAL_T)
+                t.set_mask_rate(min(1, (processed_tokens / WARMUP_T)))
 
                 updates += 1
                 lr = sched.get_last_lr()[0]
@@ -81,10 +79,10 @@ def train(g: TRWSampler, model: BERT):
                 en = time.time()
 
                 # Log epoch
-                with open(f'rw_bertlog_{SIZE}.txt', 'a') as f:
+                with open(f'{OUT_F}log_{SIZE}.txt', 'a') as f:
                     f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
 
-                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} (max: {mb.size(1)}), {en-st:0.2f}s)')
+                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
 
 
                 st = time.time()
@@ -96,22 +94,14 @@ def train(g: TRWSampler, model: BERT):
             if updates % 100 == 99:
                 torch.save(
                     (model.state_dict()),
-                    f'bert_{SIZE}.pt'
+                    f'{OUT_F}_{SIZE}.pt'
                 )
-
-            if processed_tokens > WARMUP_T*10*next_checkpoint:
-                torch.save(
-                    (model.state_dict()),
-                    f'bert-{next_checkpoint}_{SIZE}.pt'
-                )
-                next_checkpoint += 1
-
 
         e += 1
 
     torch.save(
         model.state_dict(),
-        f'bert_{SIZE}.pt'
+        f'{OUT_F}_{SIZE}.pt'
     )
 
 
@@ -133,8 +123,15 @@ if __name__ == '__main__':
 
     MINI_BS = params.MINI_BS
 
-    g = torch.load('data/lanl_tgraph_tr.pt', weights_only=False)
-    g = TRWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
+    if args.temporal:
+        g = torch.load('data/lanl_tgraph_tr.pt', weights_only=False)
+        g = TRWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
+        OUT_F = 'trw_bert'
+    else:
+        g = torch.load('data/lanl_sgraph_tr.pt', weights_only=False)
+        g = RWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
+        OUT_F = 'rw_bert'
+
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)
 

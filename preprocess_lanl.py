@@ -333,12 +333,12 @@ def partition_tgraph():
         for i in range(1, idxptr.size(0)):
             st = idxptr[i-1]; en = idxptr[i]
             selected = subset_mask[st:en].sum().item()
-            new_ptr.append(selected)
+            new_ptr.append(new_ptr[-1] + selected)
 
         return torch.tensor(new_ptr)
 
     for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
-        new_ptr = reindex(g.idxptr, tr)
+        new_ptr = reindex(g.idxptr, mask)
         data = Data(
             x = g.x,
             idxptr = new_ptr,
@@ -353,6 +353,42 @@ def partition_tgraph():
             data.label = label
 
         torch.save(data, f'data/lanl_tgraph_{name}.pt')
+
+def tgraph_to_static(partition='va'):
+    g = torch.load(f'data/lanl_tgraph_{partition}.pt', weights_only=False)
+
+    edges = defaultdict(lambda : 0)
+    is_mal = set()
+    prog = tqdm(total=g.col.size(0), desc=partition)
+    for src in range(g.idxptr.size(0)-1):
+        st = g.idxptr[src]; en = g.idxptr[src+1]
+        for j in range(st,en):
+            dst = g.col[j].item()
+            edges[(src,dst)] += 1
+
+            if partition == 'te' and g.label[j]:
+                is_mal.add((src,dst))
+
+            prog.update()
+    prog.close()
+
+    src,dst,cnt,label = [],[],[],[]
+    for (s,d),weight in tqdm(edges.items()):
+        src.append(s)
+        dst.append(d)
+        cnt.append(weight)
+        if (s,d) in is_mal:
+            label.append(1)
+        else:
+            label.append(0)
+
+    data = Data(
+        g.x, edge_index=torch.tensor([src,dst]),
+        edge_attr=torch.tensor(cnt),
+        label = torch.tensor(label)
+    )
+    torch.save(data, f'data/lanl_sgraph_{partition}.pt')
+
 
 def full_to_torch():
     nid = dict(); users = dict(); computers = dict(); other = dict()
@@ -520,5 +556,8 @@ def load_full_tr():
 
 if __name__ == '__main__':
     #parse_auth()
-    full_to_tgraph()
+    #full_to_tgraph()
     partition_tgraph()
+    tgraph_to_static('tr')
+    tgraph_to_static('va')
+    tgraph_to_static('te')

@@ -6,7 +6,7 @@ from torch_cluster import random_walk
 from models.gnn_bert import GNNEmbedding
 
 class RWSampler():
-    def __init__(self, data: Data, walk_len=64, n_walks=4, batch_size=64):
+    def __init__(self, data: Data, walk_len=64, n_walks=4, batch_size=64, device='cpu'):
         self.data = data
         self.x = data.x
         self.edge_index = data.edge_index
@@ -15,6 +15,7 @@ class RWSampler():
         self.walk_len = walk_len
         self.n_walks = n_walks
         self.batch_size = batch_size
+        self.device = device
 
         self._preprocess_edges()
 
@@ -36,11 +37,11 @@ class RWSampler():
         rowptr = row.new_zeros(self.num_nodes + 1)
         torch.cumsum(deg, 0, out=rowptr[1:])
 
-        self.col = col
-        self.rowptr = rowptr
+        self.col = col.to(self.device)
+        self.rowptr = rowptr.to(self.device)
 
     def rw(self, batch, p=1, q=1):
-        batch = batch.repeat(self.n_walks)
+        batch = batch.repeat(self.n_walks).to(self.device)
         walks,eids = torch.ops.torch_cluster.random_walk(
             self.rowptr, self.col, batch,
             self.walk_len, p, q
