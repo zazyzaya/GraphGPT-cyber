@@ -9,7 +9,7 @@ class RWSampler():
     def __init__(self, data: Data, walk_len=64, n_walks=4, batch_size=64, device='cpu'):
         self.data = data
         self.x = data.x
-        self.edge_index = data.edge_index
+        self.edge_index = data.edge_index.to(device)
 
         self.num_nodes = data.x.size(0)
         self.walk_len = walk_len
@@ -40,7 +40,7 @@ class RWSampler():
         self.col = col.to(self.device)
         self.rowptr = rowptr.to(self.device)
 
-    def rw(self, batch, p=1, q=1):
+    def rw(self, batch, p=1, q=1, reverse=False):
         batch = batch.repeat(self.n_walks).to(self.device)
         walks,eids = torch.ops.torch_cluster.random_walk(
             self.rowptr, self.col, batch,
@@ -54,6 +54,9 @@ class RWSampler():
         # If no walks went to full walk_len, trim them down to save mem
         whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
         walks[:, 1:] = walks[:, 1:][:, whole_col]
+
+        if reverse:
+            walks = walks.flip(1)
 
         return walks
 

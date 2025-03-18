@@ -18,21 +18,31 @@ class TRWSampler():
         self.batch_size = batch_size
         self.device = device
 
-    def rw(self, batch, p=1, q=1):
+    def rw(self, batch, p=1, q=1, reverse=False):
         batch = batch.repeat(self.n_walks)
-        walks,eids = torch.ops.torch_cluster.temporal_random_walk(
-            self.rowptr, self.col, self.ts, batch.to(self.device),
-            self.walk_len, p, q
-        )
+
+        if reverse:
+            walks,eids = torch.ops.torch_cluster.temporal_random_walk(
+                self.rowptr, self.col, self.ts.max() - self.ts, batch.to(self.device),
+                self.walk_len, p, q
+            )
+        else:
+            walks,eids = torch.ops.torch_cluster.temporal_random_walk(
+                self.rowptr, self.col, self.ts, batch.to(self.device),
+                self.walk_len, p, q
+            )
 
         pad = eids == -1
-        pad[:, 0] = False
+        whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
+
         walks[:, 1:][pad] = GNNEmbedding.PAD
+        whole_col = torch.cat([torch.tensor([True], device=whole_col.device), whole_col])
 
         # If no walks went to full walk_len, trim them down to save mem
-        whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
-        whole_col = torch.cat([torch.tensor([True], device=whole_col.device), whole_col])
         walks = walks[:, whole_col]
+
+        if reverse:
+            walks = walks.flip(1)
 
         return walks
 
@@ -43,8 +53,17 @@ class TRWSampler():
         for b in batches:
             yield self.rw(b)
 
+    def add_edge_index(self):
+        src = torch.arange(self.rowptr.size(0)-1, device=self.device)
+        deg = self.rowptr[1:] - self.rowptr[:-1]
+        src = src.repeat_interleave(deg)
+
+        ei = torch.stack([src, self.col])
+        ei,ew = ei.unique(dim=1, return_counts=True)
+        self.edge_index = ei
+
 class RWSampler(TRWSampler):
-    def rw(self, batch, p=1, q=1):
+    def rw(self, batch, p=1, q=1, reverse=False):
         batch = batch.repeat(self.n_walks)
         walks,eids = torch.ops.torch_cluster.random_walk(
             self.rowptr, self.col, batch.to(self.device),
@@ -59,5 +78,8 @@ class RWSampler(TRWSampler):
         whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
         whole_col = torch.cat([torch.tensor([True], device=whole_col.device), whole_col])
         walks = walks[:, whole_col]
+
+        if reverse:
+            walks = walks.flip(1)
 
         return walks

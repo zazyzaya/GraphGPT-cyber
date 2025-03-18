@@ -205,17 +205,21 @@ def full_to_tgraph(delta=60*60):
     f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
     line = f.readline()
     prog = tqdm(desc='Train', total=2211245)
+    read_next = False
     while line:
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
 
-        # Ignore anonymous login
-        if src.startswith("ANON"):
-            line = f.readline()
-            continue
-
         # Only consider user-generated activity (as in Pikachu paper)
         if src.startswith('U'):
+            read_next = True
+            line = f.readline()
+            prog.update()
+            continue
+
+        # Add c-c edges initiated by a user
+        if read_next:
+            read_next = False
             src = sort_node(src)
             dst = sort_node(dst)
 
@@ -235,18 +239,21 @@ def full_to_tgraph(delta=60*60):
     f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
     line = f.readline()
     prog = tqdm(desc='Test', total=75657132)
+    read_next = False
 
     while line:
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
         label = int(tokens[-1])
 
-        # Ignore anonymous login
-        if src.startswith("ANON"):
+        if src.startswith('U'):
+            read_next = True
             line = f.readline()
+            prog.update()
             continue
 
-        if src.startswith('U'):
+        if read_next:
+            read_next = False
             src = sort_node(src)
             dst = sort_node(dst)
 
@@ -556,7 +563,7 @@ def load_full_tr():
 
 if __name__ == '__main__':
     #parse_auth()
-    #full_to_tgraph()
+    full_to_tgraph()
     partition_tgraph()
     tgraph_to_static('tr')
     tgraph_to_static('va')
