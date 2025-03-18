@@ -116,12 +116,30 @@ def train(tr,va,te, model: RWBert):
     warmup_stop = int(updates_per_epoch * WARMUP_E)
     total_steps = int(updates_per_epoch * EPOCHS)
 
-    print(updates_per_epoch)
+    model.eval()
+    add_fake_data(va)
+    auc, ap = eval(model, tr, va)
+    print('#'*20)
+    print(f'VAL SCORES')
+    print('#'*20)
+    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
+    va_auc = auc
+    va_ap = ap
+
+    auc, ap = eval(model, tr, te)
+    print('#'*20)
+    print(f'TEST SCORES')
+    print('#'*20)
+    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
+
+    best_te = auc, ap, va_auc, va_ap
+    best = va_ap
     sched = Scheduler(opt, warmup_stop, total_steps)
 
     with open(f'{HOME}/ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
-            f.write(f'epoch,auc,ap\n')
+            f.write(f'epoch,auc,ap,val_auc,val_ap\n')
+            f.write(f'0,{auc},{ap},{va_auc},{va_ap}\n')
 
     updates = 0
     opt.zero_grad()
@@ -129,9 +147,7 @@ def train(tr,va,te, model: RWBert):
     steps = 0
 
     e = 0
-    best = 0
-    best_te = None
-    for e in range(EPOCHS):
+    for e in range(10):
         idxs = torch.randperm(tr.edge_index.size(1)).split(MINI_BS)
         for idx in idxs:
             model.train()
@@ -235,7 +251,7 @@ if __name__ == '__main__':
         tr = torch.load('data/lanl_tgraph_tr.pt', weights_only=False)
         tr = TRWSampler(tr, device=DEVICE, n_walks=1, walk_len=WALK_LEN)
         tr.add_edge_index()
-        sd = torch.load(f'trw_bert_{SIZE}.pt', weights_only=True)
+        sd = torch.load(f'pretrained/rw_sampling/trw_bert_{SIZE}.pt', weights_only=True)
         FNAME = 'trw_bert'
 
     else:

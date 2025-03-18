@@ -118,7 +118,8 @@ if __name__ == '__main__':
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=512)
+        'med': SimpleNamespace(H=512, L=8, MINI_BS=512),
+        'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
     }[SIZE]
 
     MINI_BS = params.MINI_BS
