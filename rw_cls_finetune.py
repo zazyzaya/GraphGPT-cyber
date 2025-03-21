@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import LRScheduler, CosineAnnealingLR
 from transformers import BertConfig
 from tqdm import tqdm
 
-from models.gnn_bert import RWBert, GNNEmbedding
+from models.gnn_bert import RWBertFT, GNNEmbedding
 from trw_sampler import TRWSampler
 from rw_sampler import RWSampler
 
@@ -47,11 +47,13 @@ class Scheduler(LRScheduler):
         if self.last_epoch < self.warmup_stop:
             return [group['initial_lr'] * (self.last_epoch / self.warmup_stop)
                     for group in self.optimizer.param_groups]
+        # Cosine decay after that
+        # Linear decay after that
         else:
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample(tr, batch, walk_len):
+def sample(tr, batch, walk_len, first=True):
     starts = batch[0]
 
     if walk_len > 1:
@@ -59,11 +61,15 @@ def sample(tr, batch, walk_len):
     else:
         rw = starts.unsqueeze(-1)
 
-    masks = torch.tensor([[GNNEmbedding.MASK]], device=DEVICE).repeat(rw.size(0),1)
-    rw = torch.cat([rw,masks], dim=1)
-    attn_mask = rw != GNNEmbedding.PAD
+    if first:
+        dst_rw = sample(tr, batch[[1,0]], walk_len, first=False)
+        rw = torch.cat([rw, dst_rw])
+        rw = torch.cat([rw, torch.tensor([[GNNEmbedding.MASK]], device=rw.device).repeat(rw.size(0),1)], dim=1)
+        attn_mask = rw != GNNEmbedding.PAD
+        return rw, attn_mask
+    else:
+        return rw
 
-    return rw, rw==GNNEmbedding.MASK, batch[1], attn_mask
 
 @torch.no_grad()
 def eval(model, tr, to_eval):
@@ -74,14 +80,12 @@ def eval(model, tr, to_eval):
         idxs = torch.arange(to_eval.edge_index.size(1)).split(EVAL_BS)
 
         for idx in idxs:
-            walk, mask, tgt, attn_mask = sample(tr, to_eval.edge_index[:, idx].to(DEVICE), WALK_LEN)
+            walk, attn_mask = sample(tr, to_eval.edge_index[:, idx].to(DEVICE), WALK_LEN)
 
-            out = model.modified_fwd(walk, mask, tgt, attn_mask, return_loss=False).logits
-            # Sigmoid on logits to prevent squishing high scores on high-dim vector
-            out = 1 - torch.sigmoid(out)
+            out = model.predict(walk, attn_mask)
+            out = 1-torch.sigmoid(out)
 
-            pred = out[torch.arange(out.size(0)), -1, tgt]
-            preds[idx] += pred.squeeze().to('cpu')
+            preds[idx] += out.squeeze().to('cpu')
             prog.update()
 
     prog.close()
@@ -104,7 +108,7 @@ def eval(model, tr, to_eval):
     return auc,ap
 
 
-def train(tr,va,te, model: RWBert):
+def train(tr,va,te, model: RWBertFT):
     opt = AdamW(
         model.parameters(), lr=3e-4,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
@@ -114,30 +118,12 @@ def train(tr,va,te, model: RWBert):
     warmup_stop = int(updates_per_epoch * WARMUP_E)
     total_steps = int(updates_per_epoch * EPOCHS)
 
-    model.eval()
-    add_fake_data(va)
-    auc, ap = eval(model, tr, va)
-    print('#'*20)
-    print(f'VAL SCORES')
-    print('#'*20)
-    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
-
-    va_auc = auc
-    va_ap = ap
-
-    auc, ap = eval(model, tr, te)
-    print('#'*20)
-    print(f'TEST SCORES')
-    print('#'*20)
-    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
-
-    best_te = auc, ap, va_auc, va_ap
-    best = va_ap
+    best = 0
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(f'{HOME}/{DATASET}/ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+    with open(f'{HOME}/ft_cls_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,auc,ap,val_auc,val_ap\n')
-            f.write(f'0,{auc},{ap},{va_auc},{va_ap}\n')
+
 
     updates = 0
     opt.zero_grad()
@@ -149,9 +135,15 @@ def train(tr,va,te, model: RWBert):
         idxs = torch.randperm(tr.edge_index.size(1)).split(MINI_BS)
         for idx in idxs:
             model.train()
-            walk,mask,tgt,attn_mask = sample(tr, tr.edge_index[:,idx], WALK_LEN)
-            loss = model.modified_fwd(walk, mask, tgt, attn_mask)
-            loss.backward()
+            walk,attn_mask = sample(tr, tr.edge_index[:,idx], WALK_LEN)
+            pos_loss = model.forward(walk, attn_mask, 1.)
+            pos_loss.backward()
+
+            walk,attn_mask = sample(tr, torch.randint(0, tr.edge_index.max()+1, (2,idx.size(0))), WALK_LEN)
+            neg_loss = model.forward(walk, attn_mask, 0.)
+            neg_loss.backward()
+
+            loss = (pos_loss + neg_loss).item()
 
             steps += 1
             if steps*MINI_BS == BS:
@@ -193,7 +185,7 @@ def train(tr,va,te, model: RWBert):
         if store_best:
             best_te = (auc, ap, va_auc, va_ap)
 
-        with open(f'{HOME}/{DATASET}/ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+        with open(f'{HOME}/ft_cls_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
             f.write(f'{e+1},{auc},{ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap = best_te
@@ -222,9 +214,9 @@ def add_fake_data(data, percent=1):
 
 if __name__ == '__main__':
     arg = ArgumentParser()
-    arg.add_argument('--size', default='med')
+    arg.add_argument('--size', default='mini')
     arg.add_argument('--device', type=int, default=0)
-    arg.add_argument('--walk-len', type=int, default=4)
+    arg.add_argument('--walk-len', type=int, default=6)
     arg.add_argument('--temporal', action='store_true')
     arg.add_argument('--optc', action='store_true')
     args = arg.parse_args()
@@ -242,7 +234,7 @@ if __name__ == '__main__':
     }[SIZE]
     MINI_BS = params.MINI_BS
 
-    if args.temporal:
+    if args.temporal or True:
         tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
         tr = TRWSampler(tr, device=DEVICE, n_walks=1, walk_len=WALK_LEN)
         tr.add_edge_index()
@@ -258,9 +250,6 @@ if __name__ == '__main__':
     if DATASET == 'lanl':
         va = torch.load('data/lanl_sgraph_va.pt', weights_only=False)
         te = torch.load('data/lanl_sgraph_te.pt', weights_only=False)
-    else:
-        va = torch.load('data/optc_sgraph_va.pt', weights_only=False)
-        te = torch.load('data/optc_sgraph_te.pt', weights_only=False)
 
     va.label = torch.zeros(va.edge_attr.size())
     add_fake_data(va)
@@ -273,9 +262,6 @@ if __name__ == '__main__':
         intermediate_size=   params.H * 4,
         num_nodes = tr.x.size(0)
     )
-    model = RWBert(config)
-    model.load_state_dict(sd)
-    model = model.to(DEVICE)
-
+    model = RWBertFT(config, sd, DEVICE)
     train(tr,va,te, model)
 

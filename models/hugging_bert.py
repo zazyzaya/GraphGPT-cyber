@@ -54,10 +54,13 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
 
-    def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True):
+    def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True, skip_cls=True):
         input_ids = walks.to(self.device)
         tgt = torch.full(masks.size(), -100, device=masks.device)
-        tgt[masks] = targets
+        
+        if isinstance(targets, torch.Tensor):
+            tgt[masks] = targets
+        
         tgt = tgt.to(self.device)
         pos_ids = torch.arange(
             tgt.size(1),
@@ -69,7 +72,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
 
         out = self.forward(
             input_ids, labels=tgt, position_ids=pos_ids,
-            return_dict=True, attention_mask=attn_mask
+            return_dict=True, attention_mask=attn_mask, skip_cls=skip_cls
         )
 
         if return_loss:
@@ -91,6 +94,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        skip_cls: bool = False
     ) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -126,6 +130,9 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
+        if skip_cls: 
+            return sequence_output
+
         prediction_scores = self.cls(sequence_output)
 
         masked_lm_loss = None

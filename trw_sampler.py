@@ -11,6 +11,7 @@ class TRWSampler():
         self.rowptr = data.idxptr.to(device)
         self.col = data.col.to(device)
         self.ts = data.ts.to(device)
+        self.data = data
 
         self.num_nodes = data.x.size(0)
         self.walk_len = walk_len
@@ -54,13 +55,16 @@ class TRWSampler():
             yield self.rw(b)
 
     def add_edge_index(self):
-        src = torch.arange(self.rowptr.size(0)-1, device=self.device)
-        deg = self.rowptr[1:] - self.rowptr[:-1]
-        src = src.repeat_interleave(deg)
+        if not hasattr(self.data, 'edge_index'):
+            src = torch.arange(self.rowptr.size(0)-1, device=self.col.device)
+            deg = self.rowptr[1:] - self.rowptr[:-1]
+            src = src.repeat_interleave(deg)
 
-        ei = torch.stack([src, self.col])
-        ei,ew = ei.unique(dim=1, return_counts=True)
-        self.edge_index = ei
+            ei = torch.stack([src, self.col])
+            ei,ew = ei.unique(dim=1, return_counts=True)
+            self.edge_index = ei
+        else:
+            self.edge_index = self.data.edge_index.to(self.col.device)
 
 class RWSampler(TRWSampler):
     def rw(self, batch, p=1, q=1, reverse=False):

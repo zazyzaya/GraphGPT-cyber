@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from copy import deepcopy
+from math import ceil
 import time
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ from torch.optim.lr_scheduler import LRScheduler, CosineAnnealingLR
 from transformers import BertConfig
 from tqdm import tqdm
 
-from models.gnn_bert import RWBert, GNNEmbedding
+from models.gnn_bert import RWBert, RWBertFT, GNNEmbedding
 from trw_sampler import TRWSampler
 from rw_sampler import RWSampler
 
@@ -26,7 +27,7 @@ HOME = 'results/rw/'
 WHITELIST = 10949 # 'C15244' whitelisted
 
 WALK_LEN = 4
-NUM_EVAL_ITERS = 1
+NUM_EVAL_ITERS = 5
 MINI_BS = 512
 BS = 1024 // 2 # Adding equal number of neg samples
 EVAL_BS = 1024
@@ -52,18 +53,19 @@ class Scheduler(LRScheduler):
                     for group in self.optimizer.param_groups]
 
 def sample(tr, batch, walk_len):
-    starts = batch[0]
-
     if walk_len > 1:
-        rw = tr.rw(starts, walk_len, reverse=True)
+        rw_src = tr.rw(batch[0], walk_len, reverse=True)
+        rw_dst = tr.rw(batch[1], walk_len)
     else:
-        rw = starts.unsqueeze(-1)
+        rw_src = batch[0].unsqueeze(-1)
+        rw_dst = batch[1].unsqueeze(-1)
 
-    masks = torch.tensor([[GNNEmbedding.MASK]], device=DEVICE).repeat(rw.size(0),1)
-    rw = torch.cat([rw,masks], dim=1)
+    rw = torch.cat([rw_src, rw_dst], dim=1)
     attn_mask = rw != GNNEmbedding.PAD
+    tgt_mask = torch.zeros(rw.size(), dtype=torch.bool)
+    tgt_mask[:, rw_src.size(1)-1:rw_src.size(1)+1] = True 
 
-    return rw, rw==GNNEmbedding.MASK, batch[1], attn_mask
+    return rw, attn_mask, tgt_mask 
 
 @torch.no_grad()
 def eval(model, tr, to_eval):
@@ -74,14 +76,13 @@ def eval(model, tr, to_eval):
         idxs = torch.arange(to_eval.edge_index.size(1)).split(EVAL_BS)
 
         for idx in idxs:
-            walk, mask, tgt, attn_mask = sample(tr, to_eval.edge_index[:, idx].to(DEVICE), WALK_LEN)
+            rw,attn,tgt = sample(tr, to_eval.edge_index[:, idx].to(DEVICE), WALK_LEN)
 
-            out = model.modified_fwd(walk, mask, tgt, attn_mask, return_loss=False).logits
+            out = model.predict(rw,attn,tgt)
             # Sigmoid on logits to prevent squishing high scores on high-dim vector
             out = 1 - torch.sigmoid(out)
 
-            pred = out[torch.arange(out.size(0)), -1, tgt]
-            preds[idx] += pred.squeeze().to('cpu')
+            preds[idx] += out.squeeze().to('cpu')
             prog.update()
 
     prog.close()
@@ -104,40 +105,21 @@ def eval(model, tr, to_eval):
     return auc,ap
 
 
-def train(tr,va,te, model: RWBert):
+def train(tr,va,te, model: RWBertFT):
     opt = AdamW(
         model.parameters(), lr=3e-4,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
     )
 
     updates_per_epoch = tr.edge_index.size(1) / BS
-    warmup_stop = int(updates_per_epoch * WARMUP_E)
-    total_steps = int(updates_per_epoch * EPOCHS)
+    warmup_stop = ceil(updates_per_epoch * WARMUP_E)
+    total_steps = ceil(updates_per_epoch * EPOCHS)
 
-    model.eval()
-    add_fake_data(va)
-    auc, ap = eval(model, tr, va)
-    print('#'*20)
-    print(f'VAL SCORES')
-    print('#'*20)
-    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
-
-    va_auc = auc
-    va_ap = ap
-
-    auc, ap = eval(model, tr, te)
-    print('#'*20)
-    print(f'TEST SCORES')
-    print('#'*20)
-    print(f"AUC: {auc:0.4f}, AP:  {ap:0.4f}")
-
-    best_te = auc, ap, va_auc, va_ap
-    best = va_ap
+    best = 0
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(f'{HOME}/{DATASET}/ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+    with open(f'{HOME}/ft_lp_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,auc,ap,val_auc,val_ap\n')
-            f.write(f'0,{auc},{ap},{va_auc},{va_ap}\n')
 
     updates = 0
     opt.zero_grad()
@@ -149,8 +131,16 @@ def train(tr,va,te, model: RWBert):
         idxs = torch.randperm(tr.edge_index.size(1)).split(MINI_BS)
         for idx in idxs:
             model.train()
-            walk,mask,tgt,attn_mask = sample(tr, tr.edge_index[:,idx], WALK_LEN)
-            loss = model.modified_fwd(walk, mask, tgt, attn_mask)
+            rw,mask,tgt = sample(tr, tr.edge_index[:,idx], WALK_LEN)
+            loss = model(rw,mask,tgt, 1.)
+            loss.backward()
+
+            rw,mask,tgt = sample(
+                tr, 
+                torch.randint(0, tr.edge_index.max()+1, (2,idx.size(0))),
+                WALK_LEN
+            )
+            loss = model(rw,mask,tgt, 0.)
             loss.backward()
 
             steps += 1
@@ -193,7 +183,7 @@ def train(tr,va,te, model: RWBert):
         if store_best:
             best_te = (auc, ap, va_auc, va_ap)
 
-        with open(f'{HOME}/{DATASET}/ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+        with open(f'{HOME}/ft_lp_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
             f.write(f'{e+1},{auc},{ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap = best_te
@@ -217,7 +207,6 @@ def add_fake_data(data, percent=1):
     ])
     data.label = torch.ones(data.edge_attr.size())
     data.label[:real.sum()] = 0
-
 
 
 if __name__ == '__main__':
@@ -256,9 +245,11 @@ if __name__ == '__main__':
         FNAME = 'rw_bert'
 
     if DATASET == 'lanl':
+        print("Loading LANL")
         va = torch.load('data/lanl_sgraph_va.pt', weights_only=False)
         te = torch.load('data/lanl_sgraph_te.pt', weights_only=False)
     else:
+        print("Loading OpTC")
         va = torch.load('data/optc_sgraph_va.pt', weights_only=False)
         te = torch.load('data/optc_sgraph_te.pt', weights_only=False)
 
@@ -273,8 +264,7 @@ if __name__ == '__main__':
         intermediate_size=   params.H * 4,
         num_nodes = tr.x.size(0)
     )
-    model = RWBert(config)
-    model.load_state_dict(sd)
+    model = RWBertFT(config, sd, DEVICE)
     model = model.to(DEVICE)
 
     train(tr,va,te, model)

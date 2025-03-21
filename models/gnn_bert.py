@@ -181,25 +181,55 @@ class GNNBert(BertPreTrainedModel):
         )
 
 class RWBert(GraphBertForMaskedLM):
-    def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True):
+    def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True, skip_cls=False):
         walks[walks < 0] += GNNEmbedding.OFFSET + self.config.num_nodes
-        return super().modified_fwd(walks, masks, targets, attn_mask, return_loss=return_loss)
+        return super().modified_fwd(walks, masks, targets, attn_mask, return_loss=return_loss, skip_cls=skip_cls)
 
 
-class RWBertFT(torch.nn.Module):
-    def __init__(self, config, weights, device='cpu'):
+class RWBertFT(torch.nn.Module): 
+    def __init__(self, config, sd, device='cpu'):
         super().__init__()
-        self.fm = GraphBertForMaskedLM(config)
-        sd = torch.load(weights, weights_only=True, map_location='cpu')
+        self.fm = RWBert(config)
         self.fm.load_state_dict(sd)
         self.fm = self.fm.to(device)
 
-        self.cls = torch.nn.Linear(config.hidden_size*2, 1, device=device)
+        self.cls = nn.Sequential(
+            torch.nn.Linear(config.hidden_size*2, config.hidden_size, device=device),
+            torch.nn.ReLU(), 
+            torch.nn.Linear(config.hidden_size, 1)
+        )
 
         self.config = config
         self.device = device
 
-    def predict(self, walks) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
+    def predict(self, walks,attn_mask,tgt_mask): 
+        out = self.fm.modified_fwd(walks, tgt_mask, None, attn_mask, return_loss=False, skip_cls=True)
+        out = out[tgt_mask] # [src1, dst1, src2, dst2, ...]
+        out = out.reshape(out.size(0)//2, -1) # [[src,dst],[src,dst], ...]
+        return self.cls(out)
+
+    def forward(self, rw,attn,tgt_mask, target): 
+        pred = self.predict(rw,attn,tgt_mask)
+        loss_fn = nn.BCEWithLogitsLoss()
+        
+        tgt = torch.full(pred.size(), target, device=pred.device)
+        loss = loss_fn(pred,tgt)
+        return loss 
+
+
+class RWBertFT_Old(torch.nn.Module):
+    def __init__(self, config, sd, device='cpu'):
+        super().__init__()
+        self.fm = RWBert(config)
+        self.fm.load_state_dict(sd)
+        self.fm = self.fm.to(device)
+
+        self.cls = torch.nn.Linear(config.hidden_size, 1, device=device)
+
+        self.config = config
+        self.device = device
+
+    def predict(self, walks, attn_mask) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
         return_dict = self.config.use_return_dict
 
         input_ids = walks.to(self.device)
@@ -216,26 +246,30 @@ class RWBertFT(torch.nn.Module):
             assert inputs_embeds.shape[:2] == input_ids.shape[:2]
             input_ids = None
 
+        tgt = walks == GNNEmbedding.MASK
+
+        walks[walks < 0] += GNNEmbedding.OFFSET + self.config.num_nodes
         outputs = self.fm.bert(
             input_ids,
             position_ids=position_ids,
             return_dict=return_dict,
+            attention_mask=attn_mask
         )[0]
-        middle = outputs.size(1) // 2
-        outputs = outputs[:, [middle-1, middle]].view(-1, self.config.hidden_size*2)
 
-        predictions = self.cls(outputs)
+        z = outputs[tgt]
+        predictions = self.cls(z)
         return predictions
 
-    def forward(self, edges, targets) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
+    def forward(self, edges, attn_mask, target) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
             config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are ignored (masked), the
             loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
         """
-        predictions = self.predict(edges)
+        predictions = self.predict(edges, attn_mask)
         loss_fn = torch.nn.BCEWithLogitsLoss()
 
-        loss = loss_fn(predictions, targets.to(self.device))
+        targets = torch.full(predictions.size(), target, device=self.device)
+        loss = loss_fn(predictions, targets)
         return loss

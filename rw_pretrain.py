@@ -111,6 +111,7 @@ if __name__ == '__main__':
     arg.add_argument('--size', default='NO INPUT')
     arg.add_argument('--device', type=int, default=0)
     arg.add_argument('--temporal', action='store_true')
+    arg.add_argument('--optc', action='store_true')
     args = arg.parse_args()
 
     SIZE = args.size
@@ -124,12 +125,17 @@ if __name__ == '__main__':
 
     MINI_BS = params.MINI_BS
 
+    if args.optc:
+        dataset = 'optc'
+    else:
+        dataset = 'lanl'
+
     if args.temporal:
-        g = torch.load('data/lanl_tgraph_tr.pt', weights_only=False)
+        g = torch.load(f'data/{dataset}_tgraph_tr.pt', weights_only=False)
         g = TRWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
         OUT_F = 'trw_bert'
     else:
-        g = torch.load('data/lanl_sgraph_tr.pt', weights_only=False)
+        g = torch.load(f'data/{dataset}_sgraph_tr.pt', weights_only=False)
         g = RWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
         OUT_F = 'rw_bert'
 

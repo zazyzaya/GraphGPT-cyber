@@ -6,71 +6,59 @@ from torch_geometric.data import Data
 
 HOME_DIR = '/mnt/raid10/cyber_datasets/OpTC'
 N_FILES = 12672 # Originally split for Euler paper into hour-long chunks
+NUM_NODES = 1000
+
+def argsort(seq): return sorted(range(len(seq)), key=seq.__getitem__)
 
 def full_to_tgraph():
-    csr = defaultdict(lambda : [[],[],[]])
+    csr = defaultdict(lambda : [[],[]])
     first = True
     t0 = None
 
-    max_nid = 0
+    f = open(f'{HOME_DIR}/benign.csv', 'r')
+    line = f.readline()
+    prog = tqdm(total=274682407)
 
-    for i in tqdm(range(N_FILES)):
-        try:
-            f = open(f'{HOME_DIR}/{i}.csv', 'r')
-        except FileNotFoundError:
-            # Didn't record data outside 8-6 but file numbers
-            # correspond to timecodes so they continue increasing
-            # as if those files exist
-            continue
+    while line:
+        src,dst,ts = line.split(',')
+        ts = int(ts.split('.')[0])
+        src = int(src)
+        dst = int(dst)
+
+        if first:
+            t0 = ts
+            first = False
+
+        ts -= t0
+
+        # Bi-directional
+        csr[src][0].append(dst)
+        csr[src][1].append(ts)
+        csr[dst][0].append(src)
+        csr[dst][1].append(ts)
 
         line = f.readline()
-        sub_csr = defaultdict(lambda : set())
+        prog.update()
 
-        # Squish edges that happen within single file
-        while line:
-            ts,src,dst,label = line.split(',')
-            ts = int(ts.split('.')[0])
-            src = int(src)
-            dst = int(dst)
-            label = int(label)
-
-            if first:
-                t0 = ts
-                first = False
-
-            ts -= t0
-
-            # Bi-directional
-            sub_csr[src].add((dst,label))
-            sub_csr[dst].add((src,label))
-
-            line = f.readline()
-
-        f.close()
-
-        for src,d_l in sub_csr.items():
-            for dst,label in d_l:
-                csr[src][0].append(dst)
-                csr[src][1].append(i)
-
-                if label:
-                    csr[src][2].append(len(csr[src][0])-1)
+    prog.close()
+    f.close()
 
     # Do this at the end so all sections of the graph
     # agree on node mappings
-    x = torch.zeros(len(csr), 1)
+    x = torch.zeros(NUM_NODES, 1)
 
     idxptr = [0]
     col = []
     ts = []
-    is_mal = []
     for i in tqdm(range(x.size(0))):
-        neighbors,t,label = csr[i]
+        neighbors,t = csr[i]
+        sort_idx = argsort(t)
+
+        neighbors = [neighbors[i] for i in sort_idx]
+        t = [t[i] for i in sort_idx]
+
         col += neighbors
         ts += t
-
-        if label:
-            is_mal += [l + idxptr[-1] for l in label]
 
         idxptr.append(len(neighbors) + idxptr[-1])
         del csr[i]
@@ -80,8 +68,7 @@ def full_to_tgraph():
             x = x,
             idxptr = torch.tensor(idxptr),
             col = torch.tensor(col),
-            ts = torch.tensor(ts),
-            is_mal = torch.tensor(is_mal),
+            ts = torch.tensor(ts)
         ),
         'data/optc_tgraph_csr.pt'
     )
@@ -90,21 +77,13 @@ def partition_tgraph():
     g = torch.load('data/optc_tgraph_csr.pt', weights_only=False)
 
     idxs = torch.randperm(g.col.size(0))
-    tr_end = int(idxs.size(0) * 0.8)
-    va_end = int(idxs.size(0) * 0.9)
+    tr_end = int(idxs.size(0) * 0.9)
 
     tr = torch.zeros(g.col.size(0), dtype=torch.bool)
     va = torch.zeros_like(tr)
-    te = torch.zeros_like(tr)
 
     tr[idxs[:tr_end]] = True
-    va[idxs[tr_end:va_end]] = True
-    te[idxs[va_end:]] = True
-
-    # Mask out anomalies so they're all in test set
-    tr[g.is_mal] = False
-    va[g.is_mal] = False
-    te[g.is_mal] = True
+    va[idxs[tr_end:]] = True
 
     # Generate new index pointer for subset of column that was selected
     def reindex(idxptr, subset_mask):
@@ -116,7 +95,7 @@ def partition_tgraph():
 
         return torch.tensor(new_ptr)
 
-    for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
+    for mask,name in [(tr, 'tr'), (va, 'va')]:
         new_ptr = reindex(g.idxptr, mask)
         data = Data(
             x = g.x,
@@ -125,53 +104,102 @@ def partition_tgraph():
             ts = g.ts[mask]
         )
 
-        if name == 'te':
-            label = torch.zeros(mask.size(0))
-            label[g.is_mal] = 1
-            label = label[mask]
-            data.label = label
-
         torch.save(data, f'data/optc_tgraph_{name}.pt')
 
-def tgraph_to_static(partition='va'):
-    g = torch.load(f'data/optc_tgraph_{partition}.pt', weights_only=False)
+def build_malgraphs(day):
+    f = open(f'{HOME_DIR}/attack_day-{day}.csv')
 
     edges = defaultdict(lambda : 0)
-    is_mal = set()
-    prog = tqdm(total=g.col.size(0), desc=partition)
-    for src in range(g.idxptr.size(0)-1):
-        st = g.idxptr[src]; en = g.idxptr[src+1]
-        for j in range(st,en):
-            dst = g.col[j].item()
-            edges[(src,dst)] += 1
+    mal = set()
 
-            if partition == 'te' and g.label[j]:
-                is_mal.add((src,dst))
+    line = f.readline()
+    prog = tqdm(desc=f'Day {day}')
+    while line:
+        src,dst,ts,is_mal = line.split(',')
+        src = int(src); dst = int(dst)
+        is_mal = int(is_mal)
 
-            prog.update()
-    prog.close()
+        edges[(src,dst)] += 1
+        if is_mal:
+            mal.add((src,dst))
 
-    src,dst,cnt,label = [],[],[],[]
-    for (s,d),weight in tqdm(edges.items()):
+        line = f.readline()
+        prog.update()
+
+    src,dst = [],[]
+    attr,label = [],[]
+    for (s,d),cnt in edges.items():
         src.append(s)
         dst.append(d)
-        cnt.append(weight)
-        if (s,d) in is_mal:
+        attr.append(cnt)
+
+        if (s,d) in mal:
             label.append(1)
         else:
             label.append(0)
 
     data = Data(
-        g.x, edge_index=torch.tensor([src,dst]),
-        edge_attr=torch.tensor(cnt),
-        label = torch.tensor(label)
+        x=torch.zeros(NUM_NODES),
+        edge_index=torch.tensor([src,dst]),
+        edge_attr=torch.tensor(attr),
+        label=torch.tensor(label)
     )
-    torch.save(data, f'data/optc_sgraph_{partition}.pt')
+    torch.save(data, f'data/optc_attack_day-{day}.pt')
+
+def to_static():
+    # Connect all attack graphs into single data unit to make testing easier
+    gs = [torch.load(f'data/optc_attack_day-{i}.pt', weights_only=False) for i in range(1,4)]
+    g = Data(
+        x = gs[0].x, 
+        edge_index=torch.cat([g.edge_index for g in gs], dim=1), 
+        edge_attr=torch.cat([g.edge_attr for g in gs]), 
+        label = torch.cat([g.label for g in gs])
+    )
+    torch.save(g, 'data/optc_sgraph_te.pt')
+
+    # Convert val graph into static graph 
+    g = torch.load('data/optc_tgraph_va.pt', weights_only=False)
+    edges = defaultdict(lambda : 0)
+    for src in tqdm(range(g.idxptr.size(0)-1)): 
+        st = g.idxptr[src]; en = g.idxptr[src+1]
+        for i in range(st,en): 
+            dst = g.col[i].item()
+            edges[(src, dst)] += 1
+
+    src,dst,cnt = [],[],[]
+    for (s,d),c in edges.items(): 
+        src.append(s)
+        dst.append(d)
+        cnt.append(c) 
+
+    data = Data(
+        x=g.x, 
+        edge_index = torch.tensor([src,dst]),
+        edge_attr = torch.tensor(cnt)
+    )
+    torch.save(data, 'data/optc_sgraph_va.pt')
+
+def compress_tr_ei():
+    g = torch.load('data/optc_tgraph_tr.pt', weights_only=False)
+    edges = set()
+    for src in tqdm(range(g.idxptr.size(0)-1)): 
+        st = g.idxptr[src]; en = g.idxptr[src+1]
+        for i in range(st,en): 
+            dst = g.col[i].item()
+            edges.add((src,dst))
+
+    src,dst = [],[]
+    for (s,d) in edges:
+        src.append(s); dst.append(d)
+    g.edge_index = torch.tensor([src,dst])
+    torch.save(g, 'data/optc_tgraph_tr.pt')
 
 
 if __name__ == '__main__':
-    full_to_tgraph()
-    partition_tgraph()
-    tgraph_to_static('tr')
-    tgraph_to_static('va')
-    tgraph_to_static('te')
+    #full_to_tgraph()
+    #partition_tgraph()
+    #build_malgraphs(1)
+    #build_malgraphs(2)
+    #build_malgraphs(3)
+    #to_static()
+    compress_tr_ei()
