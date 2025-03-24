@@ -210,16 +210,14 @@ def full_to_tgraph(delta=60*60):
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
 
-        # Only consider user-generated activity (as in Pikachu paper)
-        if src.startswith('U'):
-            read_next = True
-            line = f.readline()
+        # Only care about c-c connections
+        if src.startswith('U') or src.startswith('A'):
             prog.update()
+            line = f.readline()
             continue
 
-        # Add c-c edges initiated by a user
-        if read_next:
-            read_next = False
+        # Skip self-loops
+        if src != dst:
             src = sort_node(src)
             dst = sort_node(dst)
 
@@ -246,14 +244,12 @@ def full_to_tgraph(delta=60*60):
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
         label = int(tokens[-1])
 
-        if src.startswith('U'):
-            read_next = True
-            line = f.readline()
+        if src.startswith('U') or src.startswith('A'):
             prog.update()
+            line = f.readline()
             continue
 
-        if read_next:
-            read_next = False
+        if src != dst:
             src = sort_node(src)
             dst = sort_node(dst)
 

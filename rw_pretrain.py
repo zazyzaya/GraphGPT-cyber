@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from random import choice
 import time
 from types import SimpleNamespace
 
@@ -15,9 +16,9 @@ from tokenizer import RWTokenizer
 WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
 TOTAL_T = 10 ** 8           #(originally 10**10)
 FIXED_SMTP_RATE = 0.7
+DAYS = 58
 
 WALK_LEN = 64
-N_WALKS = 16
 BS = 1024
 
 class Scheduler(LRScheduler):
@@ -58,7 +59,13 @@ def train(g: TRWSampler, model: BERT):
 
     e = 0
     while processed_tokens < TOTAL_T:
+        snapshot = choice(SNAPSHOTS)
+        g.min_ts = snapshot     * DELTA
+        g.max_ts = (snapshot+1) * DELTA
+
         for i,mb in enumerate(g):
+            if mb.size(0) == 0:
+                continue
             loss, tokens = minibatch(mb, model)
             steps += 1
 
@@ -108,9 +115,8 @@ def train(g: TRWSampler, model: BERT):
 
 if __name__ == '__main__':
     arg = ArgumentParser()
-    arg.add_argument('--size', default='NO INPUT')
+    arg.add_argument('--size', default='tiny')
     arg.add_argument('--device', type=int, default=0)
-    arg.add_argument('--temporal', action='store_true')
     arg.add_argument('--optc', action='store_true')
     args = arg.parse_args()
 
@@ -127,17 +133,17 @@ if __name__ == '__main__':
 
     if args.optc:
         dataset = 'optc'
+        SNAPSHOTS = [] # TODO
+        DELTA = 60*60
     else:
         dataset = 'lanl'
+        SNAPSHOTS = list(range(58))
+        DELTA = 60*60*24
 
-    if args.temporal:
-        g = torch.load(f'data/{dataset}_tgraph_tr.pt', weights_only=False)
-        g = TRWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
-        OUT_F = 'trw_bert'
-    else:
-        g = torch.load(f'data/{dataset}_sgraph_tr.pt', weights_only=False)
-        g = RWSampler(g, walk_len=WALK_LEN, n_walks=N_WALKS, batch_size=MINI_BS, device=DEVICE)
-        OUT_F = 'rw_bert'
+
+    g = torch.load(f'data/{dataset}_tgraph_tr.pt', weights_only=False)
+    g = TRWSampler(g, walk_len=WALK_LEN, batch_size=MINI_BS, device=DEVICE)
+    OUT_F = 'trw_bert'
 
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)
