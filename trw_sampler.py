@@ -7,7 +7,7 @@ from joblib import Parallel, delayed
 from models.gnn_bert import GNNEmbedding
 
 class TRWSampler():
-    def __init__(self, data: Data, walk_len=64, batch_size=64, device='cpu'):
+    def __init__(self, data: Data, walk_len=64, batch_size=64, device='cpu', edge_features=False):
         self.x = data.x
         self.rowptr = data.idxptr.to(device)
         self.col = data.col.to(device)
@@ -15,6 +15,13 @@ class TRWSampler():
         self.data = data
 
         self.num_nodes = data.x.size(0)
+        self.num_tokens = data.x.size(0)
+
+        if edge_features:
+            self.edge_attr = data.edge_attr.to(device)
+            self.num_tokens += self.edge_attr.max() + 1
+
+        self.edge_features = edge_features
         self.walk_len = walk_len
         self.batch_size = batch_size
         self.device = device
@@ -29,13 +36,24 @@ class TRWSampler():
             self.rowptr, self.col, self.ts, batch.to(self.device),
             self.walk_len, min_ts=min_ts, max_ts=max_ts, reverse=reverse, return_edge_indices=True
         )
-
         pad = eids == -1
+        walks[:, 1:][pad] = GNNEmbedding.PAD
+
+        if self.edge_features:
+            edge_feats = self.edge_attr[eids] + self.num_nodes
+            edge_feats[pad] = GNNEmbedding.PAD
+            edge_feats = torch.cat([
+                edge_feats,
+                torch.full((edge_feats.size(0),1,edge_feats.size(2)), GNNEmbedding.PAD, device=edge_feats.device)
+            ], dim=1)
+
+            # Interleave nids and eids
+            walks = walks.unsqueeze(-1)
+            walks = torch.cat([walks, edge_feats], dim=-1).view(walks.size(0), -1)
+
+        pad = walks == GNNEmbedding.PAD
         whole_col = ~torch.prod(pad, dim=0, dtype=torch.bool)
         whole_row = ~torch.prod(pad, dim=1, dtype=torch.bool)
-
-        walks[:, 1:][pad] = GNNEmbedding.PAD
-        whole_col = torch.cat([torch.tensor([True], device=whole_col.device), whole_col])
 
         # If no walks went to full walk_len, trim them down to save mem
         if trim_missing:
@@ -52,6 +70,39 @@ class TRWSampler():
         for b in batches:
             yield self.rw(b, min_ts=self.min_ts, max_ts=self.max_ts)
 
+    def _single_iter_old(self, b, shuffled=True):
+        # Keep in ascending order so ts and idxptr are still in proper order
+        # should be relatively fast since batch-size is fairly low
+        if shuffled:
+            b = b.sort().values
+
+        dst = self.col[b]
+        ts = self.ts[b]
+
+        # Overhead is too high. Goes to abt 15 mins w/ threads, unclear how long w procs (too much memcopy)
+        # Worst case O(|V| + |b|) -> O(n)
+        src = []
+        cur_src = 0
+        cur_max = self.rowptr[cur_src+1]
+        for b_ in b:
+            while cur_max < b_:
+                cur_src += 1
+                cur_max  = self.rowptr[cur_src+1]
+            src.append(cur_src)
+
+        src = torch.tensor(src, device=self.device)
+        return src,dst,ts
+
+    def _single_iter(self, b, shuffled=True):
+        src = self.data.src[b.to(self.data.src.device)].to(self.device)
+        dst = self.col[b]
+        ts = self.ts[b]
+
+        if self.edge_features:
+            return src,dst,ts, self.edge_attr[b]
+
+        return src,dst,ts
+
     def edge_iter(self, shuffle=True, return_index=False):
         if shuffle:
             batches = torch.randperm(self.col.size(0), device=self.device).split(self.batch_size)
@@ -59,27 +110,31 @@ class TRWSampler():
             batches = torch.arange(self.col.size(0), device=self.device).split(self.batch_size)
 
         for b in batches:
-            # Keep in ascending order so ts and idxptr are still in proper order
-            # should be relatively fast since batch-size is fairly low
+            samp = self._single_iter(b, shuffled=shuffle)
+
+            if return_index:
+                yield *samp,b
+            else:
+                yield samp
+
+    def parallel_edge_iter(self, n_jobs=32, shuffle=True, return_index=False):
+        if shuffle:
+            batches = torch.randperm(self.col.size(0), device=self.device).split(self.batch_size)
+        else:
+            batches = torch.arange(self.col.size(0), device=self.device).split(self.batch_size)
+
+        def thread_job(b):
             if shuffle:
                 b = b.sort().values
 
             dst = self.col[b]
             ts = self.ts[b]
 
-            # Using binary search is O(n log n), perfect parallelism gets to O(log n)
-            # Maybe overhead will be too high?
-            '''
-            src = Parallel(n_jobs=16, prefer='processes')(
-                delayed(find_src)(b_, self.rowptr) for b_ in b
-            )
-            '''
-            # Overhead is too high. Goes to abt 15 mins w/ threads, unclear how long w procs (too much memcopy)
-
             # Worst case O(|V| + |b|) -> O(n)
             src = []
-            cur_src = 0
+            cur_src = find_src(b[0], self.rowptr)
             cur_max = self.rowptr[cur_src+1]
+
             for b_ in b:
                 while cur_max < b_:
                     cur_src += 1
@@ -87,6 +142,16 @@ class TRWSampler():
                 src.append(cur_src)
 
             src = torch.tensor(src, device=self.device)
+            return src,dst,ts
+
+        for b in batches:
+            # Single thread: 13-14 it/s
+            # 32: 10, 16: 8, 8: 7    :(
+            outs = Parallel(n_jobs=n_jobs, prefer='threads')(
+                delayed(thread_job)(b_) for b_ in b.split(n_jobs)
+            )
+            src,dst,ts = zip(*outs)
+            src = torch.cat(src); dst = torch.cat(dst); ts = torch.cat(ts)
 
             if return_index:
                 yield src,dst,ts,b

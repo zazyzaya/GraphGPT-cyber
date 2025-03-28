@@ -146,34 +146,158 @@ def build_malgraphs(day):
     )
     torch.save(data, f'data/optc_attack_day-{day}.pt')
 
+def build_mal_tgraph():
+    csr = defaultdict(lambda : [[],[],[]])
+    first = True
+    t0 = float('inf')
+
+    for day in range(1,4):
+        f = open(f'{HOME_DIR}/attack_day-{day}.csv')
+
+        line = f.readline()
+        prog = tqdm(desc=f'Day {day}')
+        while line:
+            src,dst,ts,is_mal = line.split(',')
+            src = int(src); dst = int(dst)
+            ts = int(ts.split('.')[0]); is_mal = int(is_mal)
+
+            # Directed edges for testing
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[src][2].append(is_mal)
+
+            t0 = min(ts, t0)
+            line = f.readline()
+            prog.update()
+
+        prog.close()
+        f.close()
+
+    # Do this at the end so all sections of the graph
+    # agree on node mappings
+    x = torch.zeros(NUM_NODES, 1)
+
+    idxptr = [0]
+    col = []
+    ts = []
+    labels = []
+    for i in tqdm(range(x.size(0))):
+        neighbors,t,label = csr[i]
+        sort_idx = argsort(t)
+
+        neighbors = [neighbors[i] for i in sort_idx]
+        t = [t[i] for i in sort_idx]
+        label = [label[i] for i in sort_idx]
+
+        col += neighbors
+        ts += t
+        labels += label
+
+        idxptr.append(len(neighbors) + idxptr[-1])
+        del csr[i]
+
+    data = Data(
+        x = x,
+        idxptr = torch.tensor(idxptr, dtype=torch.long),
+        col = torch.tensor(col, dtype=torch.long),
+        ts = (torch.tensor(ts) - t0).long(),
+        label = torch.tensor(labels)
+    )
+    torch.save(data, f'data/optc_tgraph_te.pt')
+
+def build_split_mal_tgraph():
+    for day in range(1,4):
+        csr = defaultdict(lambda : [[],[],[]])
+        t0 = float('inf')
+
+        f = open(f'{HOME_DIR}/attack_day-{day}.csv')
+
+        line = f.readline()
+        prog = tqdm(desc=f'Day {day}')
+        while line:
+            src,dst,ts,is_mal = line.split(',')
+            src = int(src); dst = int(dst)
+            ts = int(ts.split('.')[0]); is_mal = int(is_mal)
+
+            # Directed edges for testing
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[src][2].append(is_mal)
+
+            t0 = min(ts, t0)
+            line = f.readline()
+            prog.update()
+
+        prog.close()
+        f.close()
+
+        # Do this at the end so all sections of the graph
+        # agree on node mappings
+        x = torch.zeros(NUM_NODES, 1)
+
+        idxptr = [0]
+        col = []
+        ts = []
+        labels = []
+        for i in tqdm(range(x.size(0))):
+            neighbors,t,label = csr[i]
+            sort_idx = argsort(t)
+
+            neighbors = [neighbors[i] for i in sort_idx]
+            t = [t[i] for i in sort_idx]
+            label = [label[i] for i in sort_idx]
+
+            col += neighbors
+            ts += t
+            labels += label
+
+            idxptr.append(len(neighbors) + idxptr[-1])
+            del csr[i]
+
+        # Makes file larger but speeds up inference
+        idxptr = torch.tensor(idxptr, dtype=torch.long)
+        src = torch.arange(x.size(0))
+        deg = idxptr[1:] - idxptr[:-1]
+        src = src.repeat_interleave(deg)
+
+        data = Data(
+            x = x,
+            idxptr = idxptr,
+            src = src,
+            col = torch.tensor(col, dtype=torch.long),
+            ts = (torch.tensor(ts) - t0).long(),
+            label = torch.tensor(labels)
+        )
+        torch.save(data, f'data/optc_attack_day-{day}.pt')
+
 def to_static():
     # Connect all attack graphs into single data unit to make testing easier
     gs = [torch.load(f'data/optc_attack_day-{i}.pt', weights_only=False) for i in range(1,4)]
     g = Data(
-        x = gs[0].x, 
-        edge_index=torch.cat([g.edge_index for g in gs], dim=1), 
-        edge_attr=torch.cat([g.edge_attr for g in gs]), 
+        x = gs[0].x,
+        edge_index=torch.cat([g.edge_index for g in gs], dim=1),
+        edge_attr=torch.cat([g.edge_attr for g in gs]),
         label = torch.cat([g.label for g in gs])
     )
     torch.save(g, 'data/optc_sgraph_te.pt')
 
-    # Convert val graph into static graph 
+    # Convert val graph into static graph
     g = torch.load('data/optc_tgraph_va.pt', weights_only=False)
     edges = defaultdict(lambda : 0)
-    for src in tqdm(range(g.idxptr.size(0)-1)): 
+    for src in tqdm(range(g.idxptr.size(0)-1)):
         st = g.idxptr[src]; en = g.idxptr[src+1]
-        for i in range(st,en): 
+        for i in range(st,en):
             dst = g.col[i].item()
             edges[(src, dst)] += 1
 
     src,dst,cnt = [],[],[]
-    for (s,d),c in edges.items(): 
+    for (s,d),c in edges.items():
         src.append(s)
         dst.append(d)
-        cnt.append(c) 
+        cnt.append(c)
 
     data = Data(
-        x=g.x, 
+        x=g.x,
         edge_index = torch.tensor([src,dst]),
         edge_attr = torch.tensor(cnt)
     )
@@ -182,9 +306,9 @@ def to_static():
 def compress_tr_ei():
     g = torch.load('data/optc_tgraph_tr.pt', weights_only=False)
     edges = set()
-    for src in tqdm(range(g.idxptr.size(0)-1)): 
+    for src in tqdm(range(g.idxptr.size(0)-1)):
         st = g.idxptr[src]; en = g.idxptr[src+1]
-        for i in range(st,en): 
+        for i in range(st,en):
             dst = g.col[i].item()
             edges.add((src,dst))
 
@@ -202,4 +326,6 @@ if __name__ == '__main__':
     #build_malgraphs(2)
     #build_malgraphs(3)
     #to_static()
-    compress_tr_ei()
+    #compress_tr_ei()
+    #build_mal_tgraph()
+    build_split_mal_tgraph()
