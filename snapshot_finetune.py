@@ -61,10 +61,10 @@ def sample(tr, src,dst,ts, walk_len, edge_features=None):
         rw = src.unsqueeze(-1)
 
     if edge_features is not None:
-        mask = torch.tensor([GNNEmbedding.MASK], device=DEVICE).repeat(edge_features.size())
-        rw = torch.cat([rw, mask], dim=1)
-        dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
-        #rw = torch.cat([rw, edge_features], dim=1)
+        #mask = torch.tensor([GNNEmbedding.MASK], device=DEVICE).repeat(edge_features.size())
+        #rw = torch.cat([rw, mask], dim=1)
+        #dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
+        rw = torch.cat([rw, edge_features], dim=1)
 
     masks = torch.tensor([[GNNEmbedding.MASK]], device=DEVICE).repeat(rw.size(0),1)
     rw = torch.cat([rw,masks], dim=1)
@@ -379,7 +379,7 @@ if __name__ == '__main__':
     MINI_BS = params.MINI_BS
 
 
-    sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}.pt', weights_only=True)
+    sd = torch.load(f'trw_bert_{SIZE}-best.pt', weights_only=True)
     FNAME = 'snapshot_bert'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)

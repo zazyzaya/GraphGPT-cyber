@@ -30,10 +30,10 @@ class Evaluator():
             rw = src.unsqueeze(-1)
 
         if edge_features is not None:
-            mask = torch.tensor([GNNEmbedding.MASK], device=self.DEVICE).repeat(edge_features.size())
-            rw = torch.cat([rw, mask], dim=1)
-            dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
-            #rw = torch.cat([rw, edge_features], dim=1)
+            #mask = torch.tensor([GNNEmbedding.MASK], device=self.DEVICE).repeat(edge_features.size())
+            #rw = torch.cat([rw, mask], dim=1)
+            #dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
+            rw = torch.cat([rw, edge_features], dim=1)
 
         masks = torch.tensor([[GNNEmbedding.MASK]], device=self.DEVICE).repeat(rw.size(0),1)
         rw = torch.cat([rw,masks], dim=1)
@@ -190,7 +190,7 @@ class Evaluator():
                     for i,b in enumerate(batches)
                 )
             else:
-                efs = torch.randint(0, tr.edge_attr.max()+1, (src.size(0), 1), device=src.device)
+                efs = tr.edge_attr[torch.randint(0, tr.edge_attr.size(0), (src.size(0),))]
                 efs += tr.num_nodes
                 Parallel(n_jobs=self.workers, prefer='threads')(
                     delayed(thread_job_tp)(i,src[b],dst[b],ts[b],efs[b], b)

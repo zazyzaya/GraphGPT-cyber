@@ -1,4 +1,5 @@
 from collections import defaultdict
+from math import log10
 
 import torch
 from torch_geometric.data import Data
@@ -10,8 +11,17 @@ SRC_IP = 0
 SRC_PORT = 1
 DST_IP = 2
 DST_PORT = 3
-PROTO = 4
-SERVICE = 13
+
+# Useful features as identified by
+# https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=8001537
+SLOSS = 11
+DLOSS = 12
+DLOAD = 15
+SPKTS = 16
+CT_SRV_DST = 41
+CT_SRC_LTM = 46
+CT_DST_SRC_LTM = 46
+
 TS = 28
 LABEL = 48
 
@@ -38,6 +48,19 @@ def build_tgraph():
             eid = len(edge_map)
             edge_map[e] = eid
         return eid
+
+    def get_or_add_bucketted(e):
+        e = int(e)
+        if e < 10:
+            val = f'bkt-{e}'
+        else:
+            val = f'bkt-log(x)={int(log10(e))}'
+
+        return get_or_add_e(val)
+
+    # Populate with default values 0-10, 0-100
+    [get_or_add_bucketted(i) for i in range(10)]
+    [get_or_add_e(i) for i in range(100)]
 
     def add_port(p):
         if p.startswith('0x'):
@@ -66,10 +89,14 @@ def build_tgraph():
             src = get_or_add_n(tokens[SRC_IP])
             dst = get_or_add_n(tokens[DST_IP])
             e = [
-                add_port(tokens[SRC_PORT]),
-                get_or_add_e(tokens[PROTO]),
-                get_or_add_e(tokens[SERVICE]),
-                add_port(tokens[DST_PORT])
+                * [
+                    get_or_add_e(tokens[et])
+                    for et in [CT_SRV_DST, CT_SRC_LTM, CT_DST_SRC_LTM]
+                ],
+                * [
+                    get_or_add_bucketted(tokens[et])
+                    for et in [SLOSS, DLOSS, SPKTS]
+                ]
             ]
             ts = float(tokens[TS])
             label = int(tokens[LABEL])
@@ -80,11 +107,6 @@ def build_tgraph():
             csr[src][1].append(ts)
             csr[src][2].append(label)
             csr[src][3].append(e)
-
-            csr[dst][0].append(src)
-            csr[dst][1].append(ts)
-            csr[dst][2].append(label)
-            csr[dst][3].append(e)
 
             line = f.readline()
             prog.update()

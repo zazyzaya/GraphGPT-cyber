@@ -7,7 +7,7 @@ from joblib import Parallel, delayed
 from models.gnn_bert import GNNEmbedding
 
 class TRWSampler():
-    def __init__(self, data: Data, walk_len=64, batch_size=64, device='cpu', edge_features=False):
+    def __init__(self, data: Data, walk_len=64, n_walks=1, batch_size=64, device='cpu', edge_features=False):
         self.x = data.x
         self.rowptr = data.idxptr.to(device)
         self.col = data.col.to(device)
@@ -23,6 +23,7 @@ class TRWSampler():
 
         self.edge_features = edge_features
         self.walk_len = walk_len
+        self.n_walks = n_walks
         self.batch_size = batch_size
         self.device = device
 
@@ -36,6 +37,11 @@ class TRWSampler():
             self.rowptr, self.col, self.ts, batch.to(self.device),
             self.walk_len, min_ts=min_ts, max_ts=max_ts, reverse=reverse, return_edge_indices=True
         )
+
+        if reverse:
+            walks = walks.flip(1)
+            eids = eids.flip(1)
+
         pad = eids == -1
         walks[:, 1:][pad] = GNNEmbedding.PAD
 
@@ -60,15 +66,12 @@ class TRWSampler():
             walks = walks[:, whole_col]
             walks = walks[whole_row]
 
-        if reverse:
-            walks = walks.flip(1)
-
         return walks
 
     def __iter__(self):
         batches = torch.randperm(self.num_nodes).split(self.batch_size)
         for b in batches:
-            yield self.rw(b, min_ts=self.min_ts, max_ts=self.max_ts)
+            yield self.rw(b, min_ts=self.min_ts, max_ts=self.max_ts, n_walks=self.n_walks)
 
     def _single_iter_old(self, b, shuffled=True):
         # Keep in ascending order so ts and idxptr are still in proper order

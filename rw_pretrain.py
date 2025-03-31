@@ -52,17 +52,19 @@ def train_optc(g: TRWSampler, model: BERT):
 
     with open(f'{OUT_F}log_{SIZE}.txt', 'w+') as f:
         pass
-    with open(f'{OUT_F}eval_{SIZE}.csv', 'w+') as f:
-        f.write('e,te_auc,te_ap,va_auc,va_ap\n')
 
     model.eval()
-    evaluator.get_metrics(g,va,te,model)
+    te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g,va,te,model)
+    with open(f'{OUT_F}eval_{SIZE}.csv', 'w+') as f:
+        f.write('e,te_auc,te_ap,va_auc,va_ap\n')
+        f.write(f'0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 1
     opt.zero_grad()
     st = time.time()
     steps = 0
     processed_tokens = 0
+    best = 0
 
     e = 0
     while processed_tokens < TOTAL_T:
@@ -94,11 +96,26 @@ def train_optc(g: TRWSampler, model: BERT):
 
                     en = time.time()
 
-                    if updates % 100 == 99:
+                    if updates % 50 == 49:
                         torch.save(
                             (model.state_dict()),
                             f'{OUT_F}_{SIZE}.pt'
                         )
+
+                        with torch.no_grad():
+                            torch.cuda.empty_cache()
+                            model.eval()
+                            te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g, va, te, model)
+
+                            if va_auc > best:
+                                torch.save(
+                                    model.state_dict(),
+                                    f'{OUT_F}_{SIZE}-best.pt'
+                                )
+                                best = va_auc
+
+                        with open(f'{OUT_F}eval_{SIZE}.csv', 'a') as f:
+                            f.write(f'{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
                     # Log update
                     with open(f'{OUT_F}log_{SIZE}.txt', 'a') as f:
@@ -114,13 +131,6 @@ def train_optc(g: TRWSampler, model: BERT):
                     break
 
         e += 1
-        with torch.no_grad():
-            torch.cuda.empty_cache()
-            model.eval()
-            te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g, va, te, model)
-
-        with open(f'{OUT_F}eval_{SIZE}.csv', 'a') as f:
-            f.write(f'{e},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     torch.save(
         model.state_dict(),
@@ -219,14 +229,14 @@ if __name__ == '__main__':
     DEVICE = args.device if args.device >= 0 else 'cpu'
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
-        'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
+        'mini': SimpleNamespace(H=256, L=4, MINI_BS=512),
         'med': SimpleNamespace(H=512, L=8, MINI_BS=512),
         'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
     }[SIZE]
 
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
     MINI_BS = params.MINI_BS
-    edge_features = False
+    edge_features = args.unsw
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
@@ -247,6 +257,7 @@ if __name__ == '__main__':
     elif DATASET == 'unsw':
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
+        g.n_walks = 20 # Get up to about 1024 samples per update
 
     elif DATASET == 'optc':
         DELTA = 60*60 # 1hr
@@ -271,10 +282,10 @@ if __name__ == '__main__':
     )
 
     evaluator = Evaluator(
-        4,
+        1,
         dataset=DATASET, device=DEVICE,
         delta=DELTA, workers=1,
-        eval_bs=1024
+        eval_bs=2048
     )
     model = BERT(config).to(DEVICE)
     train_optc(g,model)
