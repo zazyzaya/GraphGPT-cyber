@@ -1,0 +1,13 @@
+python ftbert_finetune.py --optc --walk-len 0
+python ftbert_finetune.py --optc --walk-len 1
+python ftbert_finetune.py --optc --walk-len 2
+python ftbert_finetune.py --optc --walk-len 3
+python ftbert_finetune.py --optc --walk-len 4
+python ftbert_finetune.py --optc --walk-len 5
+python ftbert_finetune.py --optc --walk-len 6
+python ftbert_finetune.py --optc --walk-len 7
+python ftbert_finetune.py --optc --walk-len 8
+python ftbert_finetune.py --optc --walk-len 9
+python ftbert_finetune.py --optc --walk-len 10
+python ftbert_finetune.py --optc --walk-len 16
+python ftbert_finetune.py --optc --walk-len 32

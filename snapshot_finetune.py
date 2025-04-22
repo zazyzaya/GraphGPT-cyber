@@ -23,10 +23,9 @@ from rw_sampler import RWSampler
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
 EPOCHS = 32    # Epochs
+LR = 3e-4
 
 HOME = 'results/rw/'
-
-WHITELIST = 10949 # 'C15244' whitelisted
 
 WALK_LEN = 4
 NUM_EVAL_ITERS = 1
@@ -55,7 +54,7 @@ class Scheduler(LRScheduler):
                     for group in self.optimizer.param_groups]
 
 def sample(tr, src,dst,ts, walk_len, edge_features=None):
-    if walk_len > 1:
+    if walk_len > 0:
         rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
         rw = src.unsqueeze(-1)
@@ -129,7 +128,7 @@ def parallel_eval(model, tr: TRWSampler, te: TRWSampler, workers=1):
     return auc,ap
 
 @torch.no_grad()
-def parallel_validate(model, tr: TRWSampler, va: TRWSampler, workers=16, percent=0.01):
+def parallel_validate(model, tr: TRWSampler, va: TRWSampler, workers=16, percent=1):
     tns = np.zeros(va.col.size(0))
     tps = np.zeros(int(va.col.size(0) * percent))
 
@@ -246,7 +245,7 @@ def parallel_validate(model, tr: TRWSampler, va: TRWSampler, workers=16, percent
 
 @torch.no_grad()
 def get_metrics(tr,va,te, model):
-    te_auc, te_ap = parallel_eval(model, tr, te)
+    te_auc, te_ap = parallel_eval(model, tr, te, workers=WORKERS)
     print('#'*20)
     print(f'TEST SCORES')
     print('#'*20)
@@ -254,7 +253,7 @@ def get_metrics(tr,va,te, model):
     print('#'*20)
     print()
 
-    va_auc, va_ap = parallel_validate(model, tr, va)
+    va_auc, va_ap = parallel_validate(model, tr, va, workers=WORKERS)
     print('#'*20)
     print(f'VAL SCORES')
     print('#'*20)
@@ -264,7 +263,7 @@ def get_metrics(tr,va,te, model):
 
 def train(tr,va,te, model: RWBert):
     opt = AdamW(
-        model.parameters(), lr=3e-4,
+        model.parameters(), lr=LR,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
     )
 
@@ -315,7 +314,7 @@ def train(tr,va,te, model: RWBert):
                 opt.zero_grad()
                 st = time.time()
 
-            if updates and updates % 1000 == 0:
+            if updates and updates % 250 == 0:
                 model.eval()
                 te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
 
@@ -360,15 +359,15 @@ if __name__ == '__main__':
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
     args = arg.parse_args()
-
-    args.unsw = True
+    print(args)
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
+    WORKERS = 16
 
-    edge_features = args.unsw
+    edge_features = args.unsw #or args.optc
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -378,8 +377,9 @@ if __name__ == '__main__':
     }[SIZE]
     MINI_BS = params.MINI_BS
 
+    print(DATASET)
 
-    sd = torch.load(f'trw_bert_{SIZE}-best.pt', weights_only=True)
+    sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
     FNAME = 'snapshot_bert'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
@@ -399,13 +399,15 @@ if __name__ == '__main__':
         SNAPSHOTS = list(range(59))
 
     elif DATASET == 'unsw':
+        WORKERS = 1
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
 
     elif DATASET == 'optc':
-        DELTA = 60*60 # 1hr
-        uq = tr.ts.unique()
-        SNAPSHOTS = (uq // DELTA).unique().tolist()
+        DELTA = 60*60*24
+        SNAPSHOTS = (tr.ts // DELTA).unique().tolist()[:5]
+        WORKERS = 1
+        EVAL_BS = 2048*2
 
     else:
         print(f"Unrecognized dataset: {DATASET}")
@@ -421,6 +423,7 @@ if __name__ == '__main__':
     model = RWBert(config)
     model.load_state_dict(sd)
     model = model.to(DEVICE)
+    #model.bert.requires_grad = False
 
     train(tr,va,te, model)
 

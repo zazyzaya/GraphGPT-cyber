@@ -192,11 +192,12 @@ class RWBertFT(torch.nn.Module):
         self.fm = RWBert(config)
         self.fm.load_state_dict(sd)
         self.fm = self.fm.to(device)
+        self.fm.requires_grad = False  
 
         self.cls = nn.Sequential(
-            torch.nn.Linear(config.hidden_size*2, config.hidden_size, device=device),
+            torch.nn.Linear(config.hidden_size, config.hidden_size, device=device),
             torch.nn.ReLU(), 
-            torch.nn.Linear(config.hidden_size, 1)
+            torch.nn.Linear(config.hidden_size, 1, device=device)
         )
 
         self.config = config
@@ -205,15 +206,13 @@ class RWBertFT(torch.nn.Module):
     def predict(self, walks,attn_mask,tgt_mask): 
         out = self.fm.modified_fwd(walks, tgt_mask, None, attn_mask, return_loss=False, skip_cls=True)
         out = out[tgt_mask] # [src1, dst1, src2, dst2, ...]
-        out = out.reshape(out.size(0)//2, -1) # [[src,dst],[src,dst], ...]
+        #out = out.reshape(out.size(0)//2, -1) # [[src,dst],[src,dst], ...]
         return self.cls(out)
 
     def forward(self, rw,attn,tgt_mask, target): 
         pred = self.predict(rw,attn,tgt_mask)
         loss_fn = nn.BCEWithLogitsLoss()
-        
-        tgt = torch.full(pred.size(), target, device=pred.device)
-        loss = loss_fn(pred,tgt)
+        loss = loss_fn(pred,target)
         return loss 
 
 

@@ -7,11 +7,11 @@ ap.add_argument('--ap', action='store_true')
 args = ap.parse_args()
 
 if args.ap:
-    IDX = 2
+    IDX = 3
 else:
-    IDX = 1
+    IDX = 2
 
-files = glob.glob('results/rw/ft_results_trw_*.txt')
+files = glob.glob('results/rw/unsw/snapshot-ft_results_snapshot_bert_*.txt')
 
 ap_results = {
     k: [0] * 11
@@ -28,7 +28,7 @@ no_ft_results = {
 
 for f in files:
     tokens = f.split('_')
-    size = tokens[4]
+    size = tokens[-2]
     wl = int(tokens[-1].replace('.txt','').replace('wl',''))
 
     with open(f, 'r') as f_:
@@ -44,19 +44,26 @@ for f in files:
 
     best_auc = [0]; best_ap = [0]
     for line in lines:
-        if line[3] > best_auc[0]:
-            best_auc = (line[3], line[1], line[2])
+        if line[1] % 500 == 0:
+            continue
+        if line[4] > best_auc[0]:
+            best_auc = (line[4], line[2], line[3])
 
-        if line[4] > best_ap[0]:
-            best_ap = (line[4], line[1], line[2])
+        if line[5] > best_ap[0]:
+            best_ap = (line[5], line[2], line[3])
 
-    auc_results[size][wl] = best_auc[IDX]
-    ap_results[size][wl] = best_ap[IDX]
+    auc_results[size][wl] = best_auc[IDX-1]
+    ap_results[size][wl] = best_ap[IDX-1]
 
 nft = pd.DataFrame(no_ft_results)
 auc = pd.DataFrame(auc_results)
 ap = pd.DataFrame(ap_results)
 
+print("No fine tuning")
 print(nft.to_csv())
+
+print("\nBest Val AUC")
 print(auc.to_csv())
+
+print("\nBest Val AP")
 print(ap.to_csv())

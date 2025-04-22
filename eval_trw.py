@@ -14,7 +14,7 @@ Kind of ugly, but wanted to be able to use this in parts of the code other than 
 '''
 
 class Evaluator():
-    def __init__(self, walk_len, num_eval_iters=1, workers=16, eval_bs=2048, delta=0, device='cpu', dataset='unsw'):
+    def __init__(self, walk_len, num_eval_iters=1, workers=16, eval_bs=2048, delta=0, downsample=False, device='cpu', dataset='unsw'):
         self.WALK_LEN = walk_len
         self.NUM_EVAL_ITERS = num_eval_iters
         self.EVAL_BS = eval_bs
@@ -22,6 +22,8 @@ class Evaluator():
         self.DEVICE = device
         self.workers = workers
         self.DATASET = dataset
+
+        self.downsample = downsample
 
     def sample(self, tr, src,dst,ts, walk_len, edge_features=None):
         if walk_len > 1:
@@ -80,10 +82,17 @@ class Evaluator():
             del pred
             torch.cuda.empty_cache()
 
+        if not self.downsample: 
+            idxs = torch.arange(te.col.size(0)).split(self.EVAL_BS)
+        else: 
+            to_sample = torch.rand(te.col.size(0))
+            to_sample[te.label == 1] = 0
+            idxs = (to_sample < self.downsample).nonzero().squeeze()
+
         for i in range(self.NUM_EVAL_ITERS):
             Parallel(n_jobs=self.workers, prefer='threads')(
                 delayed(thread_job)(i,b)
-                for i,b in enumerate(torch.arange(te.col.size(0)).split(self.EVAL_BS))
+                for i,b in enumerate(idxs)
             )
 
 
@@ -98,7 +107,7 @@ class Evaluator():
         return auc,ap
 
     @torch.no_grad()
-    def parallel_validate(self, model, tr: TRWSampler, va: TRWSampler, percent=0.01):
+    def parallel_validate(self, model, tr: TRWSampler, va: TRWSampler, percent=1):
         tns = np.zeros(va.col.size(0))
         tps = np.zeros(int(va.col.size(0) * percent))
 
@@ -136,10 +145,16 @@ class Evaluator():
             del pred
             torch.cuda.empty_cache()
 
+        if not self.downsample: 
+            idxs = torch.arange(va.col.size(0)).split(self.EVAL_BS)
+        else: 
+            to_sample = torch.rand(va.col.size(0))
+            idxs = (to_sample < self.downsample).nonzero().squeeze()
+
         for i in range(self.NUM_EVAL_ITERS):
             Parallel(n_jobs=self.workers, prefer='threads')(
                 delayed(thread_job_tn)(i,b)
-                for i,b in enumerate(torch.arange(va.col.size(0)).split(self.EVAL_BS))
+                for i,b in enumerate(idxs)
             )
 
         prog.close()

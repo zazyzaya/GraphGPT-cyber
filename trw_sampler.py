@@ -30,12 +30,17 @@ class TRWSampler():
         self.min_ts = None
         self.max_ts = None
 
-    def rw(self, batch, n_walks=1, min_ts=None, max_ts=None, reverse=False, trim_missing=True):
+    def rw(self, batch, n_walks=1, min_ts=None, max_ts=None, reverse=False, trim_missing=True, walk_len=None):
+        if walk_len is not None: 
+            wl = walk_len
+        else: 
+            wl = self.walk_len
+
         batch = batch.repeat(n_walks)
 
         walks,eids = temporal_rw(
             self.rowptr, self.col, self.ts, batch.to(self.device),
-            self.walk_len, min_ts=min_ts, max_ts=max_ts, reverse=reverse, return_edge_indices=True
+            wl, min_ts=min_ts, max_ts=max_ts, reverse=reverse, return_edge_indices=True
         )
 
         if reverse:
