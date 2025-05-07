@@ -146,8 +146,11 @@ if __name__ == '__main__':
     arg.add_argument('--device', type=int, default=0)
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
+    arg.add_argument('--fourteen', action='store_true')
     arg.add_argument('--delta', type=int, default=-1)
     args = arg.parse_args()
+
+    print(args)
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
@@ -158,9 +161,10 @@ if __name__ == '__main__':
         'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
     }[SIZE]
 
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen else 'lanl'
     MINI_BS = params.MINI_BS
     edge_features = args.unsw #or args.optc
+    print(DATASET)
 
     if DATASET == 'optc': 
         MINI_BS = 1035
@@ -182,12 +186,17 @@ if __name__ == '__main__':
     EVAL_BS = 512
     DOWNSAMPLE = False 
 
-    if DATASET == 'lanl':
+    if DATASET.startswith('lanl'):
         WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
         TOTAL_T = 10 ** 8           #(originally 10**10)
         DELTA = 60*60*24 # 1 day
-        SNAPSHOTS = list(range(59))
-        WORKERS = 2
+
+        if DATASET == 'lanl': 
+            SNAPSHOTS = list(range(59))
+            WORKERS = 2
+        else: 
+            SNAPSHOTS = list(range(14))
+       
 
     elif DATASET == 'unsw':
         WARMUP_T = 10 ** 7 # Tokens (originally 10**9)

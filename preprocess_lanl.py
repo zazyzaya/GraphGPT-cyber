@@ -330,16 +330,6 @@ def partition_tgraph():
     va[g.is_mal] = False
     te[g.is_mal] = True
 
-    # Generate new index pointer for subset of column that was selected
-    def reindex(idxptr, subset_mask):
-        new_ptr = [0]
-        for i in range(1, idxptr.size(0)):
-            st = idxptr[i-1]; en = idxptr[i]
-            selected = subset_mask[st:en].sum().item()
-            new_ptr.append(new_ptr[-1] + selected)
-
-        return torch.tensor(new_ptr)
-
     for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
         new_ptr = reindex(g.idxptr, mask)
         data = Data(
@@ -356,6 +346,16 @@ def partition_tgraph():
             data.label = label
 
         torch.save(data, f'data/lanl_tgraph_{name}.pt')
+
+# Generate new index pointer for subset of column that was selected
+def reindex(idxptr, subset_mask):
+    new_ptr = [0]
+    for i in range(1, idxptr.size(0)):
+        st = idxptr[i-1]; en = idxptr[i]
+        selected = subset_mask[st:en].sum().item()
+        new_ptr.append(new_ptr[-1] + selected)
+
+    return torch.tensor(new_ptr)
 
 def tgraph_to_static(partition='va'):
     g = torch.load(f'data/lanl_tgraph_{partition}.pt', weights_only=False)
@@ -557,10 +557,95 @@ def load_full_tr():
 
     torch.save(g, 'data/lanl_continuous_tgraph_tr.pt')
 
+def compress(fold='te', delta=0.5): 
+    def argsort(seq): return sorted(range(len(seq)), key=seq.__getitem__)
+
+    te = torch.load(f'data/lanl_tgraph_{fold}.pt', weights_only=False)
+    snapshots = te.ts // (60*60*delta)
+
+    is_red = set() 
+    edges = defaultdict(lambda : set())
+    for i in tqdm(range(snapshots.size(0))): 
+        e = (te.col[i].item(), snapshots[i].item())
+        edges[te.src[i].item()].add(e)
+        
+        if fold == 'te' and te.label[i]: 
+            is_red.add(e)
+
+    idxptr = [0]
+    all_col = []
+    all_ts = []
+    all_label = []
+    all_src = []
+
+    for s in range(te.x.size(0)): 
+        idxptr.append(idxptr[-1] + len(edges[s]))
+
+        col = []
+        ts = []
+        src = []
+        label = []
+        for (d,t) in edges[s]: 
+            col.append(d)
+            ts.append(t)
+            src.append(s)
+            
+            if (d,t) in is_red: 
+                label.append(1) 
+            else: 
+                label.append(0)
+
+        idx = argsort(ts)
+        all_ts += [ts[i] for i in idx]
+        all_col += [col[i] for i in idx]
+        all_src += [src[i] for i in idx]
+        all_label += [label[i] for i in idx]
+
+    g = Data(
+        x = te.x, 
+        idxptr = torch.tensor(idxptr),
+        src = torch.tensor(all_src),
+        col = torch.tensor(all_col),
+        ts = torch.tensor(all_ts) * (60*60*delta), 
+        label = torch.tensor(all_label)
+    )
+
+    torch.save(g, f'data/lanl_tgraph_compressed_{fold}.pt')
+
+def filter_14(): 
+    '''
+    Filters out data after the first 14 days 
+    as was done by Argus for fair comparison 
+    '''
+    first_fourteen = (60*60*24) * 14 
+
+    for fold in ['tr', 'va', 'te']: 
+        g = torch.load(f'data/lanl_tgraph_{fold}.pt', weights_only=False)
+        to_keep = g.ts <= first_fourteen
+
+        idxptr = reindex(g.idxptr, to_keep)
+        degree = idxptr[1:] - idxptr[:-1]
+        src = torch.arange(g.x.size(0))
+        src = src.repeat_interleave(degree)
+        new_g = Data(
+            x = g.x, 
+            idxptr = idxptr, 
+            col = g.col[to_keep],
+            src = src, 
+            ts = g.ts[to_keep]
+        )
+
+        if fold == 'te': 
+            new_g.label = g.label[to_keep]
+
+        torch.save(new_g, f'data/lanl14_tgraph_{fold}.pt')
+
 if __name__ == '__main__':
     #parse_auth()
-    full_to_tgraph()
-    partition_tgraph()
-    tgraph_to_static('tr')
-    tgraph_to_static('va')
-    tgraph_to_static('te')
+    #full_to_tgraph()
+    #partition_tgraph()
+    #tgraph_to_static('tr')
+    #tgraph_to_static('va')
+    #tgraph_to_static('te')
+    #compress('va')
+    filter_14()

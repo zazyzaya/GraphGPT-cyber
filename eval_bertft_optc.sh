@@ -1,0 +1,13 @@
+#python ftbert_finetune.py --walk-len 0 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 2 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 4 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 6 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 8 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 10 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 16 --size tiny --optc --device 1
+#python ftbert_finetune.py --walk-len 32 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 1 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 3 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 5 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 7 --size tiny --optc --device 1
+python ftbert_finetune.py --walk-len 9 --size tiny --optc --device 1

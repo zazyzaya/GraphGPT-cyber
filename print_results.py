@@ -6,24 +6,28 @@ ap = ArgumentParser()
 ap.add_argument('--ap', action='store_true')
 args = ap.parse_args()
 
-if args.ap:
-    IDX = 3
-else:
-    IDX = 2
+AUC = 2 
+AP = 3
 
-files = glob.glob('results/rw/unsw/snapshot-ft_results_snapshot_bert_*.txt')
+files = glob.glob('results/rw/optc/snapshot-ft_results_snapshot_bert_*.txt')
+
+keys = ['tiny', 'mini', 'med', 'baseline']
+all_keys = []
+for k in keys: 
+    all_keys.append(k + '_auc')
+    all_keys.append(k + '_ap')
 
 ap_results = {
-    k: [0] * 11
-    for k in ['tiny', 'mini', 'med', 'baseline']
+    k: dict()
+    for k in all_keys
 }
 auc_results = {
-    k: [0] *11
-    for k in ['tiny', 'mini', 'med', 'baseline']
+    k: dict()
+    for k in all_keys
 }
 no_ft_results = {
-    k: [0] *11
-    for k in ['tiny', 'mini', 'med', 'baseline']
+    k: dict()
+    for k in all_keys
 }
 
 for f in files:
@@ -40,9 +44,10 @@ for f in files:
         for line in lines[1:-1]
     ]
 
-    no_ft_results[size][wl] = lines[0][IDX]
+    no_ft_results[size + '_auc'][wl] = lines[0][AUC]
+    no_ft_results[size + '_ap'][wl] = lines[0][AP]
 
-    best_auc = [0]; best_ap = [0]
+    best_auc = (0,0,0); best_ap = (0,0,0)
     for line in lines:
         if line[1] % 500 == 0:
             continue
@@ -52,8 +57,10 @@ for f in files:
         if line[5] > best_ap[0]:
             best_ap = (line[5], line[2], line[3])
 
-    auc_results[size][wl] = best_auc[IDX-1]
-    ap_results[size][wl] = best_ap[IDX-1]
+    auc_results[size + '_auc'][wl] = best_auc[1]
+    ap_results[size + '_auc'][wl] = best_ap[1]
+    auc_results[size + '_ap'][wl] = best_auc[2]
+    ap_results[size + '_ap'][wl] = best_ap[2]
 
 nft = pd.DataFrame(no_ft_results)
 auc = pd.DataFrame(auc_results)

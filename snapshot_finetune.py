@@ -32,6 +32,7 @@ NUM_EVAL_ITERS = 1
 MINI_BS = 512
 BS = 1024
 EVAL_BS = 1024
+EVAL_EVERY = 250 
 T_MAX = 100_000 # From alibaba source code
 
 class Scheduler(LRScheduler):
@@ -53,7 +54,7 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample(tr, src,dst,ts, walk_len, edge_features=None):
+def sample_old(tr, src,dst,ts, walk_len, edge_features=None):
     if walk_len > 0:
         rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
@@ -67,6 +68,27 @@ def sample(tr, src,dst,ts, walk_len, edge_features=None):
 
     masks = torch.tensor([[GNNEmbedding.MASK]], device=DEVICE).repeat(rw.size(0),1)
     rw = torch.cat([rw,masks], dim=1)
+    attn_mask = rw != GNNEmbedding.PAD
+
+    return rw, rw==GNNEmbedding.MASK, dst, attn_mask
+
+def sample(tr, src,dst,ts, walk_len, edge_features=None):
+    if walk_len > 0:
+        src_rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
+        dst_rw = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, reverse=False, trim_missing=False)
+
+        if edge_features is None: 
+            rw = torch.cat([src_rw, dst_rw], dim=1)
+            feat_dim = 0 
+        else: 
+            rw = torch.cat([src_rw, edge_features, dst_rw], dim=1)
+            feat_dim = edge_features.size(1)
+
+    else:
+        return sample_old(tr, src,dst,ts, walk_len, edge_features)
+
+    mask_col = src_rw.size(1) + feat_dim 
+    rw[:, mask_col] = GNNEmbedding.MASK 
     attn_mask = rw != GNNEmbedding.PAD
 
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
@@ -314,7 +336,7 @@ def train(tr,va,te, model: RWBert):
                 opt.zero_grad()
                 st = time.time()
 
-            if updates and updates % 250 == 0:
+            if updates and updates % EVAL_EVERY == 0:
                 model.eval()
                 te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
 
@@ -366,6 +388,7 @@ if __name__ == '__main__':
     WALK_LEN = args.walk_len
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
     WORKERS = 16
+    EVAL_EVERY = 1000 
 
     edge_features = args.unsw #or args.optc
 
@@ -380,7 +403,7 @@ if __name__ == '__main__':
     print(DATASET)
 
     sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
-    FNAME = 'snapshot_bert'
+    FNAME = 'bi-snapshot_bert'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
@@ -399,9 +422,10 @@ if __name__ == '__main__':
         SNAPSHOTS = list(range(59))
 
     elif DATASET == 'unsw':
-        WORKERS = 1
+        WORKERS = 8
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
+        EVAL_EVERY = 500
 
     elif DATASET == 'optc':
         DELTA = 60*60*24

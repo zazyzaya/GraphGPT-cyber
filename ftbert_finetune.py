@@ -32,6 +32,7 @@ NUM_EVAL_ITERS = 1
 MINI_BS = 512
 BS = 1024
 EVAL_BS = 1024
+EVAL_EVERY = 250 
 T_MAX = 100_000 # From alibaba source code
 
 class Scheduler(LRScheduler):
@@ -53,7 +54,27 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample(tr, src,dst,ts, walk_len, edge_features=None):
+def sample(tr, src,dst,ts, walk_len, edge_features=None): 
+    ts = ts.long()
+    if walk_len > 0:
+        rw_src = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
+        rw_dst = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, trim_missing=False)
+        
+        if edge_features is not None: 
+            rw = torch.cat([rw_src, edge_features, rw_dst], dim=1)
+        else: 
+            rw = torch.cat([rw_src, rw_dst], dim=1)
+
+    else:
+        rw = src.unsqueeze(-1)
+
+    mask = torch.full((rw.size(0), 1), GNNEmbedding.MASK, device=rw.device)
+    rw = torch.cat([rw,mask], dim=1)
+    attn_mask = rw != GNNEmbedding.PAD
+
+    return rw, attn_mask, rw == GNNEmbedding.MASK
+
+def sample_old(tr, src,dst,ts, walk_len, edge_features=None, bidirectional=False):
     if walk_len > 0:
         rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
@@ -256,7 +277,7 @@ def train(tr,va,te, model: RWBertFT):
     best = va_ap
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(f'{HOME}/{DATASET}/rwft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+    with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
             f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
@@ -310,7 +331,7 @@ def train(tr,va,te, model: RWBertFT):
                 opt.zero_grad()
                 st = time.time()
 
-            if updates and updates % 250 == 0:
+            if updates and updates % EVAL_EVERY == 0:
                 model.eval()
                 te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
 
@@ -318,7 +339,7 @@ def train(tr,va,te, model: RWBertFT):
                     best = va_ap
                     best_te = (te_auc, te_ap, va_auc, va_ap)
 
-                with open(f'{HOME}/{DATASET}/rwft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+                with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
                     f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
                 auc, ap, va_auc, va_ap = best_te
@@ -335,7 +356,7 @@ def train(tr,va,te, model: RWBertFT):
             best = va_ap
             best_te = (te_auc, te_ap, va_auc, va_ap)
 
-        with open(f'{HOME}/{DATASET}/rwft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+        with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
             f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap = best_te
@@ -354,14 +375,16 @@ if __name__ == '__main__':
     arg.add_argument('--walk-len', type=int, default=4)
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
+    arg.add_argument('--lanl14', action='store_true')
     args = arg.parse_args()
     print(args)
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl'
     WORKERS = 16
+    COMPRESS = False 
 
     edge_features = args.unsw #or args.optc
 
@@ -381,18 +404,25 @@ if __name__ == '__main__':
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
-    va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
+    if DATASET == 'lanl' and COMPRESS:
+        va = torch.load('data/lanl_tgraph_compressed_va.pt', weights_only=False)
+    else:
+        va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
     va = TRWSampler(va, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     va.label = torch.zeros_like(va.col)
 
-    te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+    if DATASET == 'lanl' and COMPRESS: 
+        te = torch.load('data/lanl_tgraph_compressed_te.pt', weights_only=False)
+    else: 
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
     label = te.label
     te = TRWSampler(te, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     te.label = label
 
-    if DATASET == 'lanl':
+    if DATASET.startswith('lanl'):
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(59))
+        EVAL_EVERY = 2000 # ~2 times per epoch 
 
     elif DATASET == 'unsw':
         DELTA = 0

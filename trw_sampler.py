@@ -26,6 +26,7 @@ class TRWSampler():
         self.n_walks = n_walks
         self.batch_size = batch_size
         self.device = device
+        self.trim_missing = False 
 
         self.min_ts = None
         self.max_ts = None
@@ -48,7 +49,11 @@ class TRWSampler():
             eids = eids.flip(1)
 
         pad = eids == -1
-        walks[:, 1:][pad] = GNNEmbedding.PAD
+        
+        if not reverse:
+            walks[:, 1:][pad] = GNNEmbedding.PAD
+        else: 
+            walks[:, :-1][pad] = GNNEmbedding.PAD
 
         if self.edge_features:
             edge_feats = self.edge_attr[eids] + self.num_nodes
