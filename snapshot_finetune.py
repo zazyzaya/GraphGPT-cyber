@@ -17,15 +17,12 @@ from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBert, GNNEmbedding
-from trw_sampler import TRWSampler
-from rw_sampler import RWSampler
+from rw_sampler import TRWSampler as TRW, RWSampler as RW
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
 EPOCHS = 32    # Epochs
 LR = 3e-4
-
-HOME = 'results/rw/'
 
 WALK_LEN = 4
 NUM_EVAL_ITERS = 1
@@ -54,7 +51,7 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample_old(tr, src,dst,ts, walk_len, edge_features=None):
+def sample_uni(tr, src,dst,ts, walk_len, edge_features=None):
     if walk_len > 0:
         rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
@@ -72,7 +69,7 @@ def sample_old(tr, src,dst,ts, walk_len, edge_features=None):
 
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
 
-def sample(tr, src,dst,ts, walk_len, edge_features=None):
+def sample_bi(tr, src,dst,ts, walk_len, edge_features=None):
     if walk_len > 0:
         src_rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
         dst_rw = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, reverse=False, trim_missing=False)
@@ -85,7 +82,7 @@ def sample(tr, src,dst,ts, walk_len, edge_features=None):
             feat_dim = edge_features.size(1)
 
     else:
-        return sample_old(tr, src,dst,ts, walk_len, edge_features)
+        return sample_uni(tr, src,dst,ts, walk_len, edge_features)
 
     mask_col = src_rw.size(1) + feat_dim 
     rw[:, mask_col] = GNNEmbedding.MASK 
@@ -94,7 +91,7 @@ def sample(tr, src,dst,ts, walk_len, edge_features=None):
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
 
 @torch.no_grad()
-def parallel_eval(model, tr: TRWSampler, te: TRWSampler, workers=1):
+def parallel_eval(model, tr, te, workers=1):
     preds = np.zeros(te.col.size(0))
     prog = tqdm(desc='Eval', total=(te.col.size(0) // EVAL_BS)*NUM_EVAL_ITERS)
 
@@ -150,7 +147,7 @@ def parallel_eval(model, tr: TRWSampler, te: TRWSampler, workers=1):
     return auc,ap
 
 @torch.no_grad()
-def parallel_validate(model, tr: TRWSampler, va: TRWSampler, workers=16, percent=1):
+def parallel_validate(model, tr, va, workers=16, percent=1):
     tns = np.zeros(va.col.size(0))
     tps = np.zeros(int(va.col.size(0) * percent))
 
@@ -380,6 +377,8 @@ if __name__ == '__main__':
     arg.add_argument('--walk-len', type=int, default=4)
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
+    arg.add_argument('--bi', action='store_true')
+    arg.add_argument('--static', action='store_true')
     args = arg.parse_args()
     print(args)
 
@@ -389,6 +388,10 @@ if __name__ == '__main__':
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
     WORKERS = 16
     EVAL_EVERY = 1000 
+    
+    HOME = f'results/{"rw" if args.static else "trw"}/'
+
+    sample = sample_bi if args.bi else sample_uni 
 
     edge_features = args.unsw #or args.optc
 
@@ -402,8 +405,14 @@ if __name__ == '__main__':
 
     print(DATASET)
 
-    sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
-    FNAME = 'bi-snapshot_bert'
+    if not args.static: 
+        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
+    else: 
+        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
+
+    FNAME = f'{"bi_" if args.bi else ""}snapshot_bert{"_static" if args.static else ""}'
+
+    TRWSampler = RW if args.static else TRW
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)

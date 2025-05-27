@@ -11,6 +11,7 @@ from transformers import BertConfig
 from eval_trw import Evaluator
 from models.gnn_bert import RWBert as BERT, GNNEmbedding
 from rw_sampler import RWSampler
+from trw_sampler import TRWSampler
 from tokenizer import RWTokenizer
 from snapshot_finetune import get_metrics
 
@@ -31,9 +32,7 @@ class Scheduler(LRScheduler):
                     for group in self.optimizer.param_groups]
         # Linear decay after that
         else:
-            coeff = max(1e-8, 1 - ((self.last_epoch-WARMUP_T)/(TOTAL_T-WARMUP_T)))
-                     
-            return [group['initial_lr'] * coeff
+            return [group['initial_lr'] * (1 - ((self.last_epoch-WARMUP_T)/(TOTAL_T-WARMUP_T)))
                     for group in self.optimizer.param_groups]
 
 def minibatch(mb, model: BERT):
@@ -45,7 +44,7 @@ def minibatch(mb, model: BERT):
 
     return loss, token_count
 
-def train(g: RWSampler, model: BERT):
+def train(g: TRWSampler, model: BERT):
     opt = AdamW(
         model.parameters(), lr=3e-4,
         betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1
@@ -56,7 +55,7 @@ def train(g: RWSampler, model: BERT):
         pass
 
     #model.eval()
-    #te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g,va,te,model)
+    te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g,va,te,model)
     with open(f'{OUT_F}eval_{SIZE}.csv', 'w+') as f:
         f.write('e,te_auc,te_ap,va_auc,va_ap\n')
         #f.write(f'0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
@@ -70,47 +69,52 @@ def train(g: RWSampler, model: BERT):
 
     e = 0
     while processed_tokens < TOTAL_T:
-        for i,mb in enumerate(g):
-            if mb.size(0) == 0:
-                continue
-            model.train()
-            loss, tokens = minibatch(mb, model)
-            steps += 1
+        shuffle(SNAPSHOTS)
+        for snapshot in SNAPSHOTS:
+            g.min_ts = snapshot     * DELTA
+            g.max_ts = (snapshot+1) * DELTA
 
-            if steps * MINI_BS >= BS:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-                opt.step()
-                sched.step()
+            for i,mb in enumerate(g):
+                if mb.size(0) == 0:
+                    continue
+                model.train()
+                loss, tokens = minibatch(mb, model)
+                steps += 1
 
-                processed_tokens += tokens
-                t.set_mask_rate(min(1, (processed_tokens / WARMUP_T)))
+                if steps * MINI_BS >= BS:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+                    opt.step()
+                    sched.step()
 
-                updates += 1
-                lr = sched.get_last_lr()[0]
-                sched.last_epoch = processed_tokens
-                opt.zero_grad()
-                steps = 0
+                    processed_tokens += tokens
+                    t.set_mask_rate(min(1, (processed_tokens / WARMUP_T)))
 
-                en = time.time()
+                    updates += 1
+                    lr = sched.get_last_lr()[0]
+                    sched.last_epoch = processed_tokens
+                    opt.zero_grad()
+                    steps = 0
 
-                if updates % CHECKPOINT == CHECKPOINT-1:
-                    torch.save(
-                        (model.state_dict()),
-                        f'{OUT_F}_{SIZE}.pt'
-                    )
+                    en = time.time()
 
-                # Log update
-                with open(f'{OUT_F}log_{SIZE}.txt', 'a') as f:
-                    f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
+                    if updates % CHECKPOINT == CHECKPOINT-1:
+                        torch.save(
+                            (model.state_dict()),
+                            f'{OUT_F}_{SIZE}.pt'
+                        )
 
-                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
+                    # Log update
+                    with open(f'{OUT_F}log_{SIZE}.txt', 'a') as f:
+                        f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
+
+                    print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
 
 
-            st = time.time()
+                st = time.time()
 
 
-            if processed_tokens >= TOTAL_T:
-                break
+                if processed_tokens >= TOTAL_T:
+                    break
 
         e += 1
         with torch.no_grad():
@@ -166,15 +170,15 @@ if __name__ == '__main__':
         MINI_BS = 1035
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
-    g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
+    g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
     va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
-    va = RWSampler(va, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+    va = TRWSampler(va, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     va.label = torch.zeros_like(va.col)
 
     te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
     label = te.label
-    te = RWSampler(te, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+    te = TRWSampler(te, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     te.label = label
 
     CHECKPOINT = 1000
@@ -199,8 +203,6 @@ if __name__ == '__main__':
         TOTAL_T = 10 ** 8           #(originally 10**10)
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
-        EVAL_EVERY = 10
-
         if SIZE == 'tiny':
             g.n_walks = 20 # Get up to about 1024 samples per update
         elif SIZE == 'mini':
@@ -225,7 +227,7 @@ if __name__ == '__main__':
     else:
         print(f"Unrecognized dataset: {DATASET}")
 
-    OUT_F = f'rw_bert_{DATASET}_'
+    OUT_F = 'trw_bert'
 
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)

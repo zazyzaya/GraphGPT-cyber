@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBert, GNNEmbedding
-from trw_sampler import TRWSampler
+from rw_sampler import TRWSampler
 
 '''
 Kind of ugly, but wanted to be able to use this in parts of the code other than snapshot_finetune.py

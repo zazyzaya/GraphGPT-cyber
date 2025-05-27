@@ -15,8 +15,7 @@ from transformers import BertConfig
 from tqdm import tqdm
 
 from models.gnn_bert import RWBert, RWBertFT, GNNEmbedding
-from trw_sampler import TRWSampler
-from rw_sampler import RWSampler
+from rw_sampler import TRWSampler, RWSampler
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs

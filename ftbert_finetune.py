@@ -17,8 +17,7 @@ from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
-from trw_sampler import TRWSampler
-from rw_sampler import RWSampler
+from rw_sampler import TRWSampler as TRW, RWSampler as RW 
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
@@ -54,7 +53,7 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample(tr, src,dst,ts, walk_len, edge_features=None): 
+def sample_bi(tr, src,dst,ts, walk_len, edge_features=None): 
     ts = ts.long()
     if walk_len > 0:
         rw_src = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
@@ -74,7 +73,7 @@ def sample(tr, src,dst,ts, walk_len, edge_features=None):
 
     return rw, attn_mask, rw == GNNEmbedding.MASK
 
-def sample_old(tr, src,dst,ts, walk_len, edge_features=None, bidirectional=False):
+def sample_uni(tr, src,dst,ts, walk_len, edge_features=None, bidirectional=False):
     if walk_len > 0:
         rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
@@ -93,7 +92,7 @@ def sample_old(tr, src,dst,ts, walk_len, edge_features=None, bidirectional=False
     return rw, attn_mask, rw == GNNEmbedding.MASK
 
 @torch.no_grad()
-def parallel_eval(model, tr: TRWSampler, te: TRWSampler, workers=1):
+def parallel_eval(model, tr, te, workers=1):
     preds = np.zeros(te.col.size(0))
     prog = tqdm(desc='Eval', total=(te.col.size(0) // EVAL_BS)*NUM_EVAL_ITERS)
 
@@ -143,7 +142,7 @@ def parallel_eval(model, tr: TRWSampler, te: TRWSampler, workers=1):
     return auc,ap
 
 @torch.no_grad()
-def parallel_validate(model, tr: TRWSampler, va: TRWSampler, workers=16, percent=1):
+def parallel_validate(model, tr, va, workers=16, percent=1):
     tns = np.zeros(va.col.size(0))
     tps = np.zeros(int(va.col.size(0) * percent))
 
@@ -277,7 +276,7 @@ def train(tr,va,te, model: RWBertFT):
     best = va_ap
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+    with open(OUT_F, 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
             f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
@@ -339,7 +338,7 @@ def train(tr,va,te, model: RWBertFT):
                     best = va_ap
                     best_te = (te_auc, te_ap, va_auc, va_ap)
 
-                with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+                with open(OUT_F, 'a') as f:
                     f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
                 auc, ap, va_auc, va_ap = best_te
@@ -356,7 +355,7 @@ def train(tr,va,te, model: RWBertFT):
             best = va_ap
             best_te = (te_auc, te_ap, va_auc, va_ap)
 
-        with open(f'{HOME}/{DATASET}/rwft_bi_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+        with open(OUT_F, 'a') as f:
             f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap = best_te
@@ -376,8 +375,13 @@ if __name__ == '__main__':
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--lanl14', action='store_true')
+    arg.add_argument('--static', action='store_true')
+    arg.add_argument('--bi', action='store_true')
     args = arg.parse_args()
     print(args)
+
+    sample = sample_bi if args.bi else sample_uni
+    bi_fname = '_bi' if args.bi else ''
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
@@ -385,6 +389,7 @@ if __name__ == '__main__':
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl'
     WORKERS = 16
     COMPRESS = False 
+    TRWSampler = RW if args.static else TRW
 
     edge_features = args.unsw #or args.optc
 
@@ -398,8 +403,14 @@ if __name__ == '__main__':
 
     print(DATASET)
 
-    sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
     FNAME = 'snapshot_bert'
+
+    if not args.static: 
+        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
+        OUT_F = f'{HOME}/{DATASET}/rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+    else: 
+        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
+        OUT_F = f'{HOME}/{DATASET}/static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)

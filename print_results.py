@@ -4,12 +4,15 @@ import pandas as pd
 from argparse import ArgumentParser
 ap = ArgumentParser()
 ap.add_argument('--ap', action='store_true')
+ap.add_argument('--ft', action='store_true')
+ap.add_argument('--dataset', default='optc')
 args = ap.parse_args()
 
 AUC = 2 
 AP = 3
 
-files = glob.glob('results/rw/optc/snapshot-ft_results_snapshot_bert_*.txt')
+folder = 'ft' if args.ft else 'trw'
+files = glob.glob(f'results/ft/optc/static_bi_results_snapshot_bert_*.txt')
 
 keys = ['tiny', 'mini', 'med', 'baseline']
 all_keys = []
