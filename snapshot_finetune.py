@@ -305,7 +305,7 @@ def train(tr,va,te, model: RWBert):
     steps = 0
 
     e = 0
-    for e in range(EPOCHS):
+    for e in range(10):
         for samp in tr.edge_iter():
             if tr.edge_features:
                 src,dst,ts,ef = samp
@@ -377,6 +377,7 @@ if __name__ == '__main__':
     arg.add_argument('--walk-len', type=int, default=4)
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
+    arg.add_argument('--lanl14', action='store_true')
     arg.add_argument('--bi', action='store_true')
     arg.add_argument('--static', action='store_true')
     args = arg.parse_args()
@@ -385,7 +386,7 @@ if __name__ == '__main__':
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl'
     WORKERS = 16
     EVAL_EVERY = 1000 
     
@@ -430,11 +431,19 @@ if __name__ == '__main__':
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(59))
 
+    elif DATASET == 'lanl':
+        DELTA = 60*60*24 # 1 day
+        SNAPSHOTS = list(range(14))
+
     elif DATASET == 'unsw':
         WORKERS = 8
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
         EVAL_EVERY = 500
+
+        # OOM 
+        if WALK_LEN > 16: 
+            WORKERS = 4
 
     elif DATASET == 'optc':
         DELTA = 60*60*24

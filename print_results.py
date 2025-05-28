@@ -12,7 +12,7 @@ AUC = 2
 AP = 3
 
 folder = 'ft' if args.ft else 'trw'
-files = glob.glob(f'results/ft/optc/static_bi_results_snapshot_bert_*.txt')
+files = glob.glob(f'results/ft/unsw/rwft_results_snapshot_bert*.txt')
 
 keys = ['tiny', 'mini', 'med', 'baseline']
 all_keys = []
