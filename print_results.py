@@ -8,15 +8,15 @@ ap.add_argument('--ft', action='store_true')
 ap.add_argument('--dataset', default='optc')
 args = ap.parse_args()
 
-AUC = 2 
+AUC = 2
 AP = 3
 
 folder = 'ft' if args.ft else 'trw'
-files = glob.glob(f'results/ft/unsw/rwft_results_snapshot_bert*.txt')
+files = glob.glob(f'results/trw/optc/snapshot-ft_results_bi_snapshot_bert*.txt')
 
 keys = ['tiny', 'mini', 'med', 'baseline']
 all_keys = []
-for k in keys: 
+for k in keys:
     all_keys.append(k + '_auc')
     all_keys.append(k + '_ap')
 

@@ -29,7 +29,7 @@ NUM_EVAL_ITERS = 1
 MINI_BS = 512
 BS = 1024
 EVAL_BS = 1024
-EVAL_EVERY = 250 
+EVAL_EVERY = 250
 T_MAX = 100_000 # From alibaba source code
 
 class Scheduler(LRScheduler):
@@ -74,18 +74,18 @@ def sample_bi(tr, src,dst,ts, walk_len, edge_features=None):
         src_rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
         dst_rw = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, reverse=False, trim_missing=False)
 
-        if edge_features is None: 
+        if edge_features is None:
             rw = torch.cat([src_rw, dst_rw], dim=1)
-            feat_dim = 0 
-        else: 
+            feat_dim = 0
+        else:
             rw = torch.cat([src_rw, edge_features, dst_rw], dim=1)
             feat_dim = edge_features.size(1)
 
     else:
         return sample_uni(tr, src,dst,ts, walk_len, edge_features)
 
-    mask_col = src_rw.size(1) + feat_dim 
-    rw[:, mask_col] = GNNEmbedding.MASK 
+    mask_col = src_rw.size(1) + feat_dim
+    rw[:, mask_col] = GNNEmbedding.MASK
     attn_mask = rw != GNNEmbedding.PAD
 
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
@@ -388,11 +388,11 @@ if __name__ == '__main__':
     WALK_LEN = args.walk_len
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl'
     WORKERS = 16
-    EVAL_EVERY = 1000 
-    
+    EVAL_EVERY = 1000
+
     HOME = f'results/{"rw" if args.static else "trw"}/'
 
-    sample = sample_bi if args.bi else sample_uni 
+    sample = sample_bi if args.bi else sample_uni
 
     edge_features = args.unsw #or args.optc
 
@@ -406,9 +406,9 @@ if __name__ == '__main__':
 
     print(DATASET)
 
-    if not args.static: 
+    if not args.static:
         sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
-    else: 
+    else:
         sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
 
     FNAME = f'{"bi_" if args.bi else ""}snapshot_bert{"_static" if args.static else ""}'
@@ -431,7 +431,7 @@ if __name__ == '__main__':
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(59))
 
-    elif DATASET == 'lanl':
+    elif DATASET == 'lanl14':
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(14))
 
@@ -441,8 +441,8 @@ if __name__ == '__main__':
         SNAPSHOTS = tr.ts.unique().tolist()
         EVAL_EVERY = 500
 
-        # OOM 
-        if WALK_LEN > 16: 
+        # OOM
+        if WALK_LEN > 16:
             WORKERS = 4
 
     elif DATASET == 'optc':
