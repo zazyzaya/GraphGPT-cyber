@@ -434,6 +434,7 @@ if __name__ == '__main__':
     elif DATASET == 'lanl14':
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(14))
+        WORKERS = 4
 
     elif DATASET == 'unsw':
         WORKERS = 8
