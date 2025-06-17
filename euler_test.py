@@ -9,17 +9,22 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
-EPOCHS = 100
+EPOCHS = 15 # Validation is no help. Gets decent scores quickly, then overfits
+DEVICE = 0 
 
 class Euler(nn.Module):
-    def __init__(self, in_dim, hidden, emb_dim):
+    def __init__(self, in_dim, hidden, emb_dim, device='cpu'):
         super().__init__()
 
-        self.gcn1 = GCNConv(in_dim, hidden)
-        self.gcn2 = GCNConv(hidden, hidden)
-        self.rnn = nn.GRU(hidden, emb_dim, batch_first=True)
+        self.device = device 
+        self.gcn1 = GCNConv(in_dim, hidden).to(device)
+        self.gcn2 = GCNConv(hidden, hidden).to(device)
+        self.rnn = nn.GRU(hidden, emb_dim, batch_first=True, device=device)
 
     def forward(self, x, eis):
+        x = x.to(self.device)
+        eis = [add_remaining_self_loops(ei.to(self.device))[0] for ei in eis]
+
         zs = [torch.relu(self.gcn1(x, ei)) for ei in eis]
         zs = [torch.relu(self.gcn2(zs[i], eis[i])) for i in range(len(zs))]
         zs = torch.stack(zs)
@@ -36,22 +41,17 @@ def to_snapshots(g, ts=None):
         mask = g.ts == t
         ei_t = ei[:, mask]
 
-        og_size = ei_t.size(1)
-        ei_t = add_remaining_self_loops(ei_t)[0]
-        extra_edges = ei_t.size(1) - og_size
-
         eis.append(ei_t)
 
         if 'label' in g.keys():
             label = g.label[mask]
-            label = torch.cat([label, torch.zeros((extra_edges,), dtype=torch.long)])
             y.append(label)
 
     x = torch.eye(g.x.size(0))
     return Data(x=x, edge_index=eis, label=y)
 
 def train(tr,va,te):
-    model = Euler(tr.x.size(0), 128, 64)
+    model = Euler(tr.x.size(0), 128, 64, device=DEVICE)
     opt = Adam(model.parameters(), lr=0.01)
     bce = nn.BCEWithLogitsLoss()
 
@@ -65,11 +65,11 @@ def train(tr,va,te):
 
             pos = (z[ei[0]] * z[ei[1]]).sum(dim=1)
             neg = (
-                z[torch.randint(ei[0].min(), ei[0].max(), (pos.size(0),))] *
-                z[torch.randint(ei[1].min(), ei[1].max(), (pos.size(0),))]
+                z[torch.randint(ei[0].min(), ei[0].max(), (pos.size(0),), device=DEVICE)] *
+                z[torch.randint(ei[1].min(), ei[1].max(), (pos.size(0),), device=DEVICE)]
             ).sum(dim=1)
 
-            labels = torch.zeros(pos.size(0)*2)
+            labels = torch.zeros(pos.size(0)*2, device=DEVICE)
             labels[pos.size(0):] = 1
 
             loss = bce.forward(
@@ -110,8 +110,8 @@ def train(tr,va,te):
             preds = torch.sigmoid(torch.cat(preds))
             y = torch.cat(te.label).clamp(0,1)
 
-            auc = auc_score(y, preds)
-            ap = ap_score(y, preds)
+            auc = auc_score(y, preds.cpu())
+            ap = ap_score(y, preds.cpu())
             print(f'\tTe AUC: {auc:0.4f}, AP: {ap:0.4f}', end='', flush=True)
 
             if va_loss < best[0]:

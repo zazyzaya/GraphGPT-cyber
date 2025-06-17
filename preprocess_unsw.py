@@ -35,7 +35,7 @@ def build_tgraph():
     t0 = float('inf')
     node_map = dict()
     edge_map = dict()
-    csr = defaultdict(lambda : [[],[],[],[]])
+    csr = defaultdict(lambda : [[],[],[],[],[]])
 
     def get_or_add_n(n):
         if (nid := node_map.get(n)) is None:
@@ -98,6 +98,10 @@ def build_tgraph():
                     for et in [SLOSS, DLOSS, SPKTS]
                 ]
             ]
+
+            raw_e = [
+                float(tokens[et]) for et in [CT_SRV_DST, CT_SRC_LTM, CT_DST_SRC_LTM, SLOSS, DLOSS, SPKTS]
+            ]
             ts = float(tokens[TS])
             label = int(tokens[LABEL])
 
@@ -107,6 +111,7 @@ def build_tgraph():
             csr[src][1].append(ts)
             csr[src][2].append(label)
             csr[src][3].append(e)
+            csr[src][4].append(raw_e)
 
             line = f.readline()
             prog.update()
@@ -125,19 +130,22 @@ def build_tgraph():
     ts = []
     labels = []
     edge_attr = []
+    raw_edge_attr = []
     for i in tqdm(range(x.size(0))):
-        neighbors,t,label,ea = csr[i]
+        neighbors,t,label,ea,rea = csr[i]
         sort_idx = argsort(t)
 
         neighbors = [neighbors[i] for i in sort_idx]
         t = [t[i] for i in sort_idx]
         label = [label[i] for i in sort_idx]
         ea = [ea[i] for i in sort_idx]
+        raw_ea = [rea[i] for i in sort_idx]
 
         col += neighbors
         ts += t
         labels += label
         edge_attr += ea
+        raw_edge_attr += raw_ea 
 
         idxptr.append(len(neighbors) + idxptr[-1])
         del csr[i]
@@ -155,14 +163,15 @@ def build_tgraph():
         col = torch.tensor(col, dtype=torch.long),
         ts = (torch.tensor(ts) - t0).long(),
         edge_attr = torch.tensor(edge_attr),
+        raw_edge_attr = torch.tensor(raw_edge_attr),
         label = torch.tensor(labels)
     )
-    torch.save(data, f'data/unsw_tgraph_csr.pt')
+    torch.save(data, f'data/unsw_tgraph_csr_raw.pt')
 
 def partition_tgraph():
     torch.manual_seed(0)
 
-    g = torch.load('data/unsw_tgraph_csr.pt', weights_only=False)
+    g = torch.load('data/unsw_tgraph_csr_raw.pt', weights_only=False)
 
     idxs = torch.randperm(g.col.size(0))
     tr_end = int(idxs.size(0) * 0.8)
@@ -200,13 +209,14 @@ def partition_tgraph():
             col = g.col[mask],
             src = g.src[mask],
             edge_attr = g.edge_attr[mask],
+            raw_edge_attr = g.raw_edge_attr[mask],
             ts = g.ts[mask]
         )
 
         if name == 'te':
             data.label = g.label[mask]
 
-        torch.save(data, f'data/unsw_tgraph_{name}.pt')
+        torch.save(data, f'data/unsw_tgraph_{name}_raw.pt')
 
 if __name__ == '__main__':
     build_tgraph()
