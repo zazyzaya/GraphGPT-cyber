@@ -11,7 +11,7 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
-EPOCHS = 100
+EPOCHS = 25
 DEVICE = 'cpu'
 
 def squared_loss(margin, t): return (margin - t)** 2
@@ -313,7 +313,7 @@ def train(tr,va,te):
                 print()
 
     print(f"Best: AUC {best[1]:0.4f}, AP {best[2]:0.4f}")
-    return {'auc': best[1], 'ap': best[2]}
+    return {'auc': best[1], 'ap': best[2], 'auc_last': auc, 'ap_last': ap}
 
 if __name__ == '__main__':
     tr = torch.load('data/unsw_tgraph_tr_raw.pt', weights_only=False)
@@ -328,6 +328,7 @@ if __name__ == '__main__':
 
     best = [train(tr,va,te) for _ in range(10)]
     df = pd.DataFrame(best)
-    print(df.mean())
-    print(df.sem())
+    df.loc['mean'] = df.mean()
+    df.loc['sem'] = df.sem()
+    
     df.to_csv('argus_results.csv')
