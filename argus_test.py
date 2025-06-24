@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import pandas as pd
 import torch
 from torch import nn
@@ -127,7 +129,7 @@ class GRU(nn.Module):
         return self.lin(xs), h
 
 class Argus(nn.Module):
-    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device):
+    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5, pos_samples=1775035):
         super().__init__()
 
         self.c1 = GCNConv(in_dim, h_dim).to(device)
@@ -135,18 +137,24 @@ class Argus(nn.Module):
         self.c2 = GCNConv(h_dim, h_dim).to(device)
         self.drop = nn.Dropout(0.1)
         self.ac = nn.Tanh()
-        self.c3 = GCNConv(h_dim, h_dim).to(device)
+        #self.c3 = GCNConv(h_dim, h_dim).to(device)
         nn4 = nn.Sequential(nn.Linear(edge_dim, 8, device=device), nn.ReLU(), # lanl: 3 or 10; optc: 5
                             nn.Linear(8, h_dim * h_dim, device=device))
         
         self.c4 = NNConv(h_dim, h_dim, nn4, aggr='mean').to(device)
         self.rnn = GRU(h_dim, h_dim, z_dim).to(device)
+        
+        self.decode_mlp = nn.Sequential(
+            nn.Linear(z_dim, z_dim), 
+            nn.Softmax(dim=1) 
+        )
 
         self.device = device
-        self.ap_loss = APLoss(pos_len=1238452, margin=0.8, gamma=0.1, surrogate_loss='squared', device=device)
+        self.ap_loss = APLoss(pos_len=pos_samples, margin=0.8, gamma=0.1, surrogate_loss='squared', device=device)
+        self.s = s 
 
 
-    def forward(self, x, eis, eas):
+    def forward(self, x, eis, eas, idxs, ptrs):
         eis = [ei.to(self.device) for ei in eis]
         eas = [ea.to(self.device) for ea in eas]
         zs = []
@@ -159,9 +167,9 @@ class Argus(nn.Module):
             z = self.c2(z, ei_self_loops)
             z = self.relu(z)
             z = self.drop(z)
-            z = self.c3(z, ei_self_loops)
-            z = self.relu(z)
-            z = self.drop(z)
+            #z = self.c3(z, ei_self_loops)
+            #z = self.relu(z)
+            #z = self.drop(z)
             z = self.c4(z, ei, edge_attr=ea)
             z = self.ac(z)
 
@@ -170,51 +178,54 @@ class Argus(nn.Module):
         zs = torch.stack(zs, dim=1)
         out = self.rnn(zs, None)
 
+        zs = []
+        for t in range(out.size(1)): 
+            z = out[:, t, :]
+            z = self.sample_z(z, idxs[i], ptrs[i])
+            zs.append(z)
+
+        out = torch.stack(zs)
         return out 
-    
-    #Adjust the edge prediction score based on other edges sharing the same src (excluding the edge)
-    def get_src_score(self, src, dst, preds):
-        src_dict = {}
-        for i in range(0, len(src)):
-            k = int(src[i])
-            if not k in src_dict:
-                src_dict[k] = [float(preds[i])]
-            else:
-                src_dict[k].append(float(preds[i]))
-        preds_src = []
-        #weights for edge score and neighborhood score
-        lambda1 = 0.5
-        lambda2 = 0.5
-        for i in range(0, len(src)):
-            k = int(src[i])
-            preds_src.append(lambda1 * float(preds[i]) + lambda2 * np.mean(src_dict[k]))
-        return torch.tensor(preds_src)
-    
 
-    def decode(self, src, dst, z):
-        return torch.sigmoid(
-            (z[src] * z[dst]).sum(dim=1)
-        )
+    def sample_z(self, z, idx,ptr): 
+        z_agg = []
+        for i in range(z.size(0)): 
+            n_neighbors = idx[i+1]-idx[i]
+            
+            if n_neighbors:
+                neighbors = ptr[idx[i] + torch.ones(n_neighbors).multinomial(self.s, replacement=True)]
+                z_agg.append((z[neighbors].sum(dim=0) + z[i]) / (self.s+1))
+            else: 
+                z_agg.append(z[i])
+        
+        z_agg = torch.stack(z_agg) 
+        return self.decode_mlp(z_agg)
 
-    def calc_loss_argus(self, z, partition, nratio, device):
-        tot_loss = torch.zeros(1).to(device)
-        ns = self.module.data.get_negative_edges(partition, nratio)
-        for i in range(len(z)):
-            ps = self.module.data.ei_masked(partition, i)
+    def decode(self, ei, z): 
+        return (z[ei[0]] * z[ei[1]]).sum(dim=1)
+
+    def calc_loss_argus(self, zs, eis):
+        tot_loss = torch.zeros(1).to(self.device)
+        for i in range(len(zs)):
+            ps = eis[i]
             if ps.size(1) == 0:
                 continue
-            t_index = torch.arange(0, ps.shape[1], dtype=torch.int64).to(device).detach()
-            pos_pred = self.decode(ps, z[i], False)
-            neg_pred = self.decode(ns[i], z[i], False)
+
+            ns = torch.randint(0, zs.size(1), ps.size())
+
+            t_index = torch.arange(0, ps.size(1), dtype=torch.int64, device=self.device).detach()
+            pos_pred = self.decode(ps, zs[i])
+            neg_pred = self.decode(ns, zs[i])
 
             tot_loss += self.ap_loss(
                 torch.cat((pos_pred, neg_pred), 0),
-                torch.cat((torch.ones(pos_pred.shape[0]),torch.zeros(neg_pred.shape[0])), 0).to(self.module.device).detach(),
+                torch.cat((torch.ones(pos_pred.size(0)),torch.zeros(neg_pred.size(0))), 0).to(self.device).detach(),
                 t_index)
-        return tot_loss.true_divide(len(z))
+            
+        return tot_loss.true_divide(len(zs))
 
 
-def to_snapshots(g, ts=None):
+def to_snapshots(g, ts=None, add_csr=False):
     # Assumes graph has src and col already
     ei = torch.stack([g.src, g.col])
     
@@ -223,6 +234,8 @@ def to_snapshots(g, ts=None):
 
     eis = []
     eas = []
+    idxs = []
+    ptrs = []
     y = []
     for t in ts:
         mask = g.ts == t
@@ -232,50 +245,41 @@ def to_snapshots(g, ts=None):
         eis.append(ei_t)
         eas.append(ea_t)
 
+        idx = [0]
+        ptr = []
+        
+        if add_csr: 
+            csr_dict = defaultdict(list)
+            for i in range(ei_t.size(1)): 
+                src,dst = ei_t[:, i]
+                csr_dict[src.item()].append(dst.item())
+            
+            for i in range(g.x.size(0)): 
+                ptr += csr_dict[i]
+                idx.append(idx[-1] + len(csr_dict[i]))
+
+            idxs.append(torch.tensor(idx))
+            ptrs.append(torch.tensor(ptr))
+
         if 'label' in g.keys():
             label = g.label[mask]
             y.append(label)
 
     x = torch.eye(g.x.size(0))
-    return Data(x=x, edge_index=eis, label=y, eas=eas)
+    return Data(x=x, edge_index=eis, label=y, eas=eas, idxs=idxs, ptrs=ptrs)
 
 def train(tr,va,te):
     model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE)
     opt = Adam(model.parameters(), lr=0.01)
     bce = nn.BCEWithLogitsLoss()
 
-    def calc_loss(zs, eis, grad=True):
-        tot_loss = 0
-        for i in range(len(eis)):
-            z = zs[i]; ei = eis[i]
-
-            if ei.size(1) == 0:
-                continue
-
-            pos = (z[ei[0]] * z[ei[1]]).sum(dim=1)
-            neg = (
-                z[torch.randint(ei[0].min(), ei[0].max(), (pos.size(0),), device=DEVICE)] *
-                z[torch.randint(ei[1].min(), ei[1].max(), (pos.size(0),), device=DEVICE)]
-            ).sum(dim=1)
-
-            labels = torch.zeros(pos.size(0)*2, device=DEVICE)
-            labels[pos.size(0):] = 1
-
-            loss = bce.forward(
-                torch.cat([pos,neg]),
-                labels
-            )
-            tot_loss += loss
-
-        return tot_loss / len(eis)
-
     best = (100,0,0)
     for e in range(EPOCHS):
         model.train()
         opt.zero_grad()
 
-        zs = model.forward(tr.x, tr.edge_index, tr.eas)
-        loss = calc_loss(zs, tr.edge_index)
+        zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
+        loss = model.calc_loss_argus(zs, tr.edge_index)
         loss.backward()
         opt.step()
 
@@ -283,12 +287,11 @@ def train(tr,va,te):
 
         with torch.no_grad():
             model.eval()
-            zs = model.forward(tr.x, tr.edge_index, tr.eas)
-            va_loss = calc_loss(zs, va.edge_index, grad=False)
+            zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
+            va_loss = model.calc_loss_argus(zs, va.edge_index).item()
             print(f'\tVal loss: {va_loss:0.4f}')
 
             preds = []
-            ys = []
             for i in range(len(te.edge_index)):
                 pred = (
                     zs[i][te.edge_index[i][0]] *
@@ -319,7 +322,7 @@ if __name__ == '__main__':
 
     ts = tr.ts.unique()
 
-    tr = to_snapshots(tr, ts)
+    tr = to_snapshots(tr, ts, add_csr=True)
     va = to_snapshots(va, ts)
     te = to_snapshots(te, ts)
 
