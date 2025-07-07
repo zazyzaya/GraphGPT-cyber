@@ -3,12 +3,12 @@ from typing import Union, List, Tuple, Optional
 from temporal_walks import temporal_rw
 import torch 
 from torch import nn, Tensor 
-from torch_geometric.nn.models import Node2Vec
 
 
 class CTDNE(nn.Module): 
     '''
     Mostly copied from PyG Node2Vec
+    Kind of pointless, given UNSW has discrete timesteps, so 
     '''
     def __init__(
         self,
@@ -30,9 +30,9 @@ class CTDNE(nn.Module):
         self.walk_length = walk_length - 1
         self.context_size = context_size
         self.walks_per_node = walks_per_node
+        self.num_negative_samples = 1
 
         self.embedding = nn.Embedding(self.num_nodes, embedding_dim, device=device)
-        self.reset_parameters()
 
     def forward(self, batch: Optional[Tensor] = None) -> Tensor:
         """Returns the embeddings for the nodes in :obj:`batch`."""
@@ -42,7 +42,11 @@ class CTDNE(nn.Module):
     @torch.jit.export
     def pos_sample(self, batch: Tensor, g) -> Tensor:
         batch = batch.repeat(self.walks_per_node)
-        rw = temporal_rw(g.rowptr, g.col, g.ts, batch, self.walk_length)
+        
+        if 'ts' in g.keys(): 
+            rw = temporal_rw(g.rowptr, g.col, g.ts, batch, self.walk_length)
+        else: 
+            rw,_ = torch.ops.torch_cluster.random_walk(g.rowptr, g.col, batch, self.walk_length, 1,1)
 
         walks = []
         num_walks_per_rw = 1 + self.walk_length + 1 - self.context_size
@@ -65,10 +69,10 @@ class CTDNE(nn.Module):
         return torch.cat(walks, dim=0)
 
     @torch.jit.export
-    def sample(self, batch: Union[List[int], Tensor]) -> Tuple[Tensor, Tensor]:
+    def sample(self, batch: Union[List[int], Tensor], g) -> Tuple[Tensor, Tensor]:
         if not isinstance(batch, Tensor):
             batch = torch.tensor(batch)
-        return self.pos_sample(batch), self.neg_sample(batch)
+        return self.pos_sample(batch, g), self.neg_sample(batch)
 
     @torch.jit.export
     def loss(self, pos_rw: Tensor, neg_rw: Tensor) -> Tensor:
@@ -99,11 +103,11 @@ class CTDNE(nn.Module):
 
 
 class GRUEncoder(nn.Module): 
-    def __init__(self, in_dim, hidden_dim, out_dim):
+    def __init__(self, in_dim, hidden_dim, out_dim, device):
         super().__init__()
-        self.gru1 = nn.GRU(in_dim, hidden_dim)
+        self.gru1 = nn.GRU(in_dim, hidden_dim, device=device)
         self.drop = nn.Dropout(0.3)
-        self.gru2 = nn.GRU(hidden_dim, out_dim) 
+        self.gru2 = nn.GRU(hidden_dim, out_dim, device=device) 
 
     def forward(self, zs): 
         '''
@@ -116,11 +120,11 @@ class GRUEncoder(nn.Module):
     
 
 class Autoencoder(nn.Module): 
-    def __init__(self, emb_dim, hidden_dim, latent_dim):
+    def __init__(self, emb_dim, hidden_dim, latent_dim, device='cpu'):
         super().__init__()
 
-        self.enc = GRUEncoder(emb_dim, hidden_dim, latent_dim)
-        self.dec = GRUEncoder(latent_dim, hidden_dim, emb_dim)
+        self.enc = GRUEncoder(emb_dim, hidden_dim, latent_dim, device)
+        self.dec = GRUEncoder(latent_dim, hidden_dim, emb_dim, device)
         self.loss = nn.MSELoss()
 
     def forward(self, zs): 
@@ -130,17 +134,18 @@ class Autoencoder(nn.Module):
     
         
 class AnomalyDetector(nn.Module): 
-    def __init__(self, latent_dim, num_nodes, s=10):
+    def __init__(self, latent_dim, num_nodes, s=10, device='cpu'):
         super().__init__()
         self.predictor = nn.Sequential(
-            nn.Linear(latent_dim, num_nodes, bias=False),
+            nn.Linear(latent_dim, num_nodes, bias=False, device=device),
             nn.Softmax(dim=1)
         )
 
-        self.s = 10 
+        self.s = s
         self.loss = nn.CrossEntropyLoss()
+        self.device = device 
 
-    def predict(self, z, te_ei, idx, ptr): 
+    def predict(self, z, te_ei, ptr, idx): 
         '''
         Make sure idx and ptr are from the training set
         '''
@@ -150,13 +155,26 @@ class AnomalyDetector(nn.Module):
             
             # Sample u's neighbors
             neighbors = idx[ptr[u]:ptr[u+1]]
-            sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
-            n_u.append(neighbors[sample_idx])
+            
+            # If u has no neighbors, just make sample == z[u]
+            if neighbors.size(0) == 0:
+                n_u.append(torch.full((self.s,), u, device=self.device))
+            else:      
+                sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
+                n_u.append(neighbors[sample_idx])
 
             # Sample v's neighbors 
             neighbors = idx[ptr[v]:ptr[v+1]]
-            sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
-            n_v.append(neighbors[sample_idx])
+            
+            # If v has no neighbors, just make sample == z[v]
+            if neighbors.size(0) == 0:
+                n_v.append(torch.full((self.s,), u, device=self.device))
+            else: 
+                sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
+                n_v.append(neighbors[sample_idx])
+
+        n_u = torch.stack(n_u)
+        n_v = torch.stack(n_v)
 
         u_aggr = (z[n_u].sum(dim=1) + z[te_ei[0]]) / (self.s + 1)
         v_aggr = (z[n_v].sum(dim=1) + z[te_ei[1]]) / (self.s + 1)
