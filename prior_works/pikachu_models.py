@@ -145,52 +145,35 @@ class AnomalyDetector(nn.Module):
         self.loss = nn.CrossEntropyLoss()
         self.device = device 
 
-    def predict(self, z, te_ei, ptr, idx): 
+    def predict(self, z, te_ei, ptr, col): 
         '''
         Make sure idx and ptr are from the training set
         '''
-        n_u, n_v = [], []
-        for i in range(te_ei.size(1)): 
-            u,v = te_ei[:,i]
-            
-            # Sample u's neighbors
-            neighbors = idx[ptr[u]:ptr[u+1]]
+        n_u = []
+        for i in range(z.size(0)):             
+            # Sample u's neighbors (original code uses same sample for every edge)
+            neighbors = col[ptr[i]:ptr[i+1]]
             
             # If u has no neighbors, just make sample == z[u]
             if neighbors.size(0) == 0:
-                n_u.append(torch.full((self.s,), u, device=self.device))
+                n_u.append(torch.full((self.s,), i, device=self.device))
             else:      
                 sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
                 n_u.append(neighbors[sample_idx])
 
-            # Sample v's neighbors 
-            neighbors = idx[ptr[v]:ptr[v+1]]
-            
-            # If v has no neighbors, just make sample == z[v]
-            if neighbors.size(0) == 0:
-                n_v.append(torch.full((self.s,), u, device=self.device))
-            else: 
-                sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
-                n_v.append(neighbors[sample_idx])
-
         n_u = torch.stack(n_u)
-        n_v = torch.stack(n_v)
-
-        u_aggr = (z[n_u].sum(dim=1) + z[te_ei[0]]) / (self.s + 1)
-        v_aggr = (z[n_v].sum(dim=1) + z[te_ei[1]]) / (self.s + 1)
-
+        u_aggr = (z[n_u].sum(dim=1) + z) / (self.s + 1)
         h_u = self.predictor(u_aggr)
-        h_v = self.predictor(v_aggr) 
 
-        return h_u, h_v 
+        return h_u[te_ei[0]], h_u[te_ei[1]]
     
-    def forward(self, z, edges, idx, ptr): 
-        h_u, _ = self.predict(z, edges, idx, ptr)
+    def forward(self, z, edges, idx, col): 
+        h_u, _ = self.predict(z, edges, idx, col)
         loss = self.loss(h_u, edges[1])
         return loss 
     
-    def get_score(self, z, edges, idx, ptr): 
-        h_u,h_v = self.predict(z, edges, idx, ptr)
+    def get_score(self, z, edges, idx, col): 
+        h_u,h_v = self.predict(z, edges, idx, col)
         
         src_score = h_u[torch.arange(h_u.size(0)), edges[1]]
         dst_score = h_v[torch.arange(h_u.size(0)), edges[0]]

@@ -192,7 +192,6 @@ class RWBertFT(torch.nn.Module):
         self.fm = RWBert(config)
         self.fm.load_state_dict(sd)
         self.fm = self.fm.to(device)
-        self.fm.requires_grad = False  
 
         self.cls = nn.Sequential(
             torch.nn.Linear(config.hidden_size, config.hidden_size, device=device),

@@ -310,6 +310,137 @@ def full_to_tgraph(delta=60*60):
         'data/lanl_tgraph_csr.pt'
     )
 
+def full_to_attr_tgraph():
+    nid = dict(); users = dict(); computers = dict(); other = dict()
+    csr = defaultdict(lambda : [[],[],[]])
+
+    def get_or_add(v, d):
+        if (nid := d.get(v)) is None:
+            nid = len(d)
+            d[v] = nid
+        return nid
+
+    def sort_node(n):
+        if n.startswith('U'):
+            get_or_add(n, users)
+        elif n.startswith('C'):
+            get_or_add(n, computers)
+        else:
+            get_or_add(n, other)
+
+        return get_or_add(n, nid)
+
+    f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
+    line = f.readline()
+    prog = tqdm(desc='Train', total=2211245)
+    read_next = False
+    while line:
+        tokens = line.split(',')
+        src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
+        
+        if ts > FOURTEEN_DAYS: 
+            break 
+
+        # Only care about c-c connections
+        if src.startswith('U') or src.startswith('A'):
+            prog.update()
+            line = f.readline()
+            continue
+
+        # Skip self-loops
+        if src != dst:
+            src = sort_node(src)
+            dst = sort_node(dst)
+
+            # Needs to be bi-directional otherwise RW doesn't work
+            # bc it's a bipartite graph of U -> C
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[dst][0].append(src)
+            csr[dst][1].append(ts)
+
+        prog.update()
+        line = f.readline()
+
+    prog.close()
+    f.close()
+
+    f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
+    line = f.readline()
+    prog = tqdm(desc='Test', total=75657132)
+    read_next = False
+
+    while line:
+        tokens = line.split(',')
+        src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
+        label = int(tokens[-1])
+
+        if src.startswith('U') or src.startswith('A'):
+            prog.update()
+            line = f.readline()
+            continue
+
+        if src != dst:
+            src = sort_node(src)
+            dst = sort_node(dst)
+
+            csr[src][0].append(dst)
+            csr[src][1].append(ts)
+            csr[dst][0].append(src)
+            csr[dst][1].append(ts)
+
+            # Only store index of anomalous edges to save space
+            if label:
+                idx = len(csr[src][0])-1
+                csr[src][2].append(idx)
+
+        prog.update()
+        line = f.readline()
+
+    prog.close()
+    f.close()
+
+    # Do this at the end so all sections of the graph
+    # agree on node mappings
+    x = torch.zeros(len(nid), 2)
+    for k,v in tqdm(nid.items(), desc='Features'):
+        if k.startswith('U'):
+            x[v] = torch.tensor([0, users[k]])
+        elif k.startswith('C'):
+            x[v] = torch.tensor([1, computers[k]])
+        else:
+            x[v] = torch.tensor([2, other[k]])
+
+     # String repr of nodes (e.g. C123)
+    names = [k for k in nid.keys()]
+
+    idxptr = [0]
+    col = []
+    ts = []
+    is_mal = []
+    for i in tqdm(range(x.size(0))):
+        neighbors,t,label = csr[i]
+        col += neighbors
+        ts += t
+
+        if label:
+            is_mal += [l + idxptr[-1] for l in label]
+
+        idxptr.append(len(neighbors) + idxptr[-1])
+        del csr[i]
+
+    torch.save(
+        Data(
+            x = x,
+            idxptr = torch.tensor(idxptr),
+            col = torch.tensor(col),
+            ts = torch.tensor(ts),
+            is_mal = torch.tensor(is_mal),
+            names = names
+        ),
+        'data/lanl_tgraph_csr.pt'
+    )
+
 def partition_tgraph():
     g = torch.load('data/lanl_tgraph_csr.pt', weights_only=False)
 

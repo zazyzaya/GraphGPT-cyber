@@ -10,7 +10,7 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
-from argus_opt import SOAP
+from .argus_opt import SOAP
 
 EPOCHS = 100
 DEVICE = 'cpu'

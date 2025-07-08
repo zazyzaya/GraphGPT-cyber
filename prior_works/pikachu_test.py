@@ -6,6 +6,7 @@ import pandas as pd
 import torch 
 from torch.optim import Adam, SGD
 from torch_geometric.data import Data 
+from torch_geometric.utils import to_undirected
 from tqdm import tqdm 
 from sklearn.metrics import roc_auc_score as auc_score, average_precision_score as ap_score
 
@@ -16,27 +17,30 @@ DEVICE = 0
 # Defaults from Word2Vec and Pikachu code 
 W2V_EPOCHS = 5 
 W2V_EMB = 128 
-WALK_LEN = 64 # Default is 500, but graphs are much smaller
+WALK_LEN = 500
 CTXT_SIZE = 5 
-AE_EPOCHS = 50 
+AE_EPOCHS = 50  # Default 50
 AE_LR = 0.001 # Default keras lr 
 AE_HIDDEN = 128
 AE_LATENT = 64
 ANOM_LR = 0.001
 ANOM_EPOCHS = 10
+ANOM_BATCH_SIZE = 5 
 TRAIN_WIN = 5 # How many snapshots per batch for anomaly detection
 
-def preprocess(g): 
+def preprocess(g, ts, undirected=False): 
     '''
     Slice input CSR graph into discrete time units
     '''
-    ts = g.ts.unique()
     snapshots = []
 
     for t in tqdm(ts, desc='Preprocessing'): 
         csr = defaultdict(list)    
         src = g.src[g.ts == t]
         dst = g.col[g.ts == t]
+
+        if undirected: 
+            src,dst = to_undirected(torch.stack(src,dst))
 
         for i in range(src.size(0)): 
             csr[src[i].item()].append(dst[i].item())
@@ -112,15 +116,35 @@ def train_anom(z, tr, va, te):
     model = AnomalyDetector(AE_LATENT, z.size(0), device=DEVICE)
     
     # Pikachu src code does gradient descent by hand using SGD 
-    opt = SGD(model.parameters(), lr=ANOM_LR) 
+    # Experiments showed Adam does a much better job
+    opt = Adam(model.parameters(), lr=ANOM_LR) 
     
     def evaluate(g): 
         model.eval()
-        y = torch.cat([g[i].label for i in range(len(g))])
+        edges = []
+        if 'label' not in g[0].keys(): 
+            y = []
+            for g_ in g:
+                y_ = torch.zeros(g_.edge_index.size(1)*2)
+                y_[g_.edge_index.size(1):] = 1
+                
+                edges.append(
+                    torch.cat([
+                        g_.edge_index, 
+                        torch.randint(0, g_.x.size(0), g_.edge_index.size())
+                    ], dim=1)
+                )
+                y.append(y_)
+            
+            y = torch.cat(y) 
+
+        else: 
+            y = torch.cat([g[i].label for i in range(len(g))])
+            edges = [g[i].edge_index for i in range(len(g))]
         
         y_hat = []
         for i in range(z.size(1)): 
-            y_hat.append(model.predict(z[:, i], g.edge_index, g.rowptr, g.col).detach())
+            y_hat.append(model.get_score(z[:, i], edges[i], tr[i].rowptr, tr[i].col).detach())
         y_hat = torch.cat(y_hat).cpu()
 
         auc = auc_score(y, y_hat)
@@ -135,17 +159,23 @@ def train_anom(z, tr, va, te):
     for e in range(1,ANOM_EPOCHS): 
         opt.zero_grad()
         model.train()
-        for t in range(z.size(1)): 
+        for mb,t in enumerate(torch.randperm(z.size(1))): 
             loss = model.forward(z[:, t], tr[t].edge_index, tr[t].rowptr, tr[t].col)
             loss.backward() 
-            print(f'\t[{e}-{t}] {loss.item()}')
+
+            if mb and mb % ANOM_BATCH_SIZE == 0:
+                opt.step()
+                opt.zero_grad()
+
+            print(f'\t[{e}-{mb}] {loss.item()}')
         opt.step()
 
         with torch.no_grad(): 
+            model.eval()
             va_auc,va_ap = evaluate(va)
-            print(f'\tVa: AUC {va_ap:0.4f}, AP {va_ap:0.4f}')
+            print(f'\tVa: AUC {va_auc:0.4f}, AP {va_ap:0.4f}')
             te_auc,te_ap = evaluate(te) 
-            print(f'\tTe: AUC {te_ap:0.4f}, AP {te_ap:0.4f}')
+            print(f'\tTe: AUC {te_auc:0.4f}, AP {te_ap:0.4f}')
         
         if va_auc > best[0]: 
             best = (va_auc, te_auc, te_ap)
@@ -171,9 +201,12 @@ def train_full(tr,va,te):
 
 if __name__ == '__main__': 
     if not os.path.exists('tmp/pikachu_tr.pt'): 
-        tr = preprocess(torch.load('../data/unsw_tgraph_tr.pt', weights_only=False))
-        va = preprocess(torch.load('../data/unsw_tgraph_va.pt', weights_only=False))
-        te = preprocess(torch.load('../data/unsw_tgraph_te.pt', weights_only=False))
+        tr = torch.load('../data/unsw_tgraph_tr.pt', weights_only=False)
+        ts = tr.ts.unique()
+
+        tr = preprocess(tr, ts, undirected=True)
+        va = preprocess(torch.load('../data/unsw_tgraph_va.pt', weights_only=False), ts)
+        te = preprocess(torch.load('../data/unsw_tgraph_te.pt', weights_only=False), ts)
 
         torch.save(tr, 'tmp/pikachu_tr.pt')
         torch.save(va, 'tmp/pikachu_va.pt')

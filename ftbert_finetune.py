@@ -11,6 +11,7 @@ from sklearn.metrics import (
 )
 import torch
 from torch.optim.adamw import AdamW
+from torch.optim import Adam
 from torch.optim.lr_scheduler import LRScheduler, CosineAnnealingLR
 from transformers import BertConfig
 from tqdm import tqdm
@@ -18,6 +19,9 @@ from tqdm import tqdm
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
 from rw_sampler import TRWSampler as TRW, RWSampler as RW 
+
+from prior_works.argus_test import APLoss
+from prior_works.argus_opt import SOAP
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
@@ -266,6 +270,7 @@ def train(tr,va,te, model: RWBertFT):
         model.parameters(), lr=LR,
         betas=(0.9, 0.99), eps=1e-10, weight_decay=0.02
     )
+    #opt = SOAP(model.parameters(), LR, mode='adam')
 
     updates_per_epoch = tr.col.size(0) / BS
     warmup_stop = int(updates_per_epoch * WARMUP_E)
@@ -313,6 +318,8 @@ def train(tr,va,te, model: RWBertFT):
             model.train()
             args = sample(tr, src,dst,ts, WALK_LEN, edge_features=ef)
             loss = model(*args, labels)
+            #preds = model.predict(*args)
+            #loss = APLoss(labels.size(0)//2).forward(preds, labels, torch.arange(labels.size(0)//2))
             loss.backward()
 
             steps += 1
@@ -364,8 +371,6 @@ def train(tr,va,te, model: RWBertFT):
         print('#'*20)
         print(f"VAL:  AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
         print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
-
-
 
 if __name__ == '__main__':
     arg = ArgumentParser()
