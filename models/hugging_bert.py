@@ -115,7 +115,7 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
             assert inputs_embeds.shape[:2] == input_ids.shape[:2]
             input_ids = None
 
-        outputs = self.bert(
+        outputs = self.bert.forward(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,

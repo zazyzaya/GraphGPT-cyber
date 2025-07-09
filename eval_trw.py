@@ -230,6 +230,7 @@ class Evaluator():
 
     @torch.no_grad()
     def get_metrics(self, tr,va,te, model):
+        te.to(tr.device)
         te_auc, te_ap = self.parallel_eval(model, tr, te)
         print('#'*20)
         print(f'TEST SCORES')
@@ -237,11 +238,14 @@ class Evaluator():
         print(f"AUC: {te_auc:0.4f}, AP:  {te_ap:0.4f}")
         print('#'*20)
         print()
+        te.to('cpu')
 
+        va.to(tr.device)
         va_auc, va_ap = self.parallel_validate(model, tr, va)
         print('#'*20)
         print(f'VAL SCORES')
         print('#'*20)
         print(f"AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
+        va.to('cpu')
 
         return te_auc, te_ap, va_auc, va_ap

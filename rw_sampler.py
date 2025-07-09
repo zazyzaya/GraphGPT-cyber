@@ -31,6 +31,16 @@ class TRWSampler():
         self.min_ts = None
         self.max_ts = None
 
+    def to(self, device): 
+        self.rowptr = self.rowptr.to(device)
+        self.col = self.col.to(device)
+        self.ts = self.ts.to(device)
+        if self.edge_features:
+            self.edge_attr = self.edge_attr.to(device)
+
+        self.device = device 
+        torch.cuda.empty_cache()
+
     def rw(self, batch, n_walks=1, min_ts=None, max_ts=None, reverse=False, trim_missing=True, walk_len=None):
         if walk_len is not None: 
             wl = walk_len

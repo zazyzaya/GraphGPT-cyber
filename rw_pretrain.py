@@ -10,7 +10,7 @@ from transformers import BertConfig
 
 from eval_trw import Evaluator
 from models.gnn_bert import RWBert as BERT, GNNEmbedding
-from rw_sampler import RWSampler
+from rw_sampler import RWSampler, TRWSampler
 from tokenizer import RWTokenizer
 from snapshot_finetune import get_metrics
 
@@ -129,10 +129,10 @@ def train(g: RWSampler, model: BERT):
                 with open(f'{OUT_F}eval_{SIZE}.csv', 'a') as f:
                     f.write(f'{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
-    torch.save(
-        model.state_dict(),
-        f'{OUT_F}_{SIZE}.pt'
-    )
+        torch.save(
+            model.state_dict(),
+            f'{OUT_F}_{SIZE}.pt'
+        )
 
 
 
@@ -143,7 +143,9 @@ if __name__ == '__main__':
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--fourteen', action='store_true')
+    arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--delta', type=int, default=-1)
+    arg.add_argument('--trw', action='store_true')
     args = arg.parse_args()
 
     print(args)
@@ -157,25 +159,42 @@ if __name__ == '__main__':
         'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
     }[SIZE]
 
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen else 'lanl14attr' if args.lanlflows else 'lanl'
     MINI_BS = params.MINI_BS
-    edge_features = args.unsw #or args.optc
+    edge_features = args.unsw or args.lanlflows
     print(DATASET)
 
     if DATASET == 'optc': 
         MINI_BS = 1035
 
-    tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
-    g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
+    if DATASET == 'lanl14attr': 
+        WALK_LEN = 32 if not args.trw else 64
+        MINI_BS = 256
 
-    va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
-    va = RWSampler(va, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-    va.label = torch.zeros_like(va.col)
+    if args.trw: 
+        tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+        g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
-    te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
-    label = te.label
-    te = RWSampler(te, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-    te.label = label
+        va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
+        va = TRWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+        va.label = torch.zeros_like(va.col)
+
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+        label = te.label
+        te = TRWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+        te.label = label
+    else: 
+        tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+        g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
+
+        va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
+        va = RWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+        va.label = torch.zeros_like(va.col)
+
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+        label = te.label
+        te = RWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+        te.label = label
 
     CHECKPOINT = 1000
     WORKERS = 1
@@ -192,6 +211,11 @@ if __name__ == '__main__':
             WORKERS = 2
         else: 
             SNAPSHOTS = list(range(14))
+
+        if DATASET == 'lanl14attr': 
+            WORKERS = 16
+            # TRW sees about 10x fewer tokens 
+            EVAL_EVERY = 10 if args.trw else 1 
        
 
     elif DATASET == 'unsw':
@@ -226,6 +250,10 @@ if __name__ == '__main__':
         print(f"Unrecognized dataset: {DATASET}")
 
     OUT_F = f'rw_bert_{DATASET}_'
+    if args.trw: 
+        OUT_F = 't'+OUT_F
+
+    print(OUT_F)
 
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)

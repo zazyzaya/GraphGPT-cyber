@@ -1,5 +1,6 @@
-import gzip
 from collections import defaultdict
+import gzip
+from math import log10
 
 from tqdm import tqdm
 import torch
@@ -311,53 +312,77 @@ def full_to_tgraph(delta=60*60):
     )
 
 def full_to_attr_tgraph():
-    nid = dict(); users = dict(); computers = dict(); other = dict()
-    csr = defaultdict(lambda : [[],[],[]])
+    nids = dict()
+    eids = dict()
+    csr = defaultdict(lambda : [[],[],[],[]])
+    edge_feat_snapshot_size = 3600
 
-    def get_or_add(v, d):
-        if (nid := d.get(v)) is None:
-            nid = len(d)
-            d[v] = nid
+    def get_or_add(v):
+        if (nid := nids.get(v)) is None:
+            nid = len(nids)
+            nids[v] = nid
         return nid
-
-    def sort_node(n):
-        if n.startswith('U'):
-            get_or_add(n, users)
-        elif n.startswith('C'):
-            get_or_add(n, computers)
+    
+    def get_or_add_e(v): 
+        if (eid := eids.get(v)) is None: 
+            eid = len(eids)
+            eids[v] = eid 
+        return eid 
+    
+    def get_or_add_bucketed(v): 
+        e = int(v)
+        if e < 100:
+            val = f'bkt-{e}'
         else:
-            get_or_add(n, other)
+            val = f'bkt-log(x)={int(log10(e))}'
 
-        return get_or_add(n, nid)
+        return get_or_add_e(val)
 
+    [get_or_add_e(e) for e in ['C', 'U', 'A']]
+    [get_or_add_bucketed(i) for i in range(100)]
+    
     f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
+    edge_feats = torch.load('data/lanl_flow_data/0.pt', weights_only=False)
+    ef_idx = 0 
+
     line = f.readline()
-    prog = tqdm(desc='Train', total=2211245)
-    read_next = False
+    prog = tqdm(desc='Train', total=1422389)
+    i = 0 
+    last_src_usr_type = None
+
     while line:
+        i += 1 
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
         
+        if i % 2: 
+            last_src_usr_type = src[0] # C(omputer), U(ser), A(nonymous)
+            line = f.readline() 
+            continue 
+
         if ts > FOURTEEN_DAYS: 
             break 
 
-        # Only care about c-c connections
-        if src.startswith('U') or src.startswith('A'):
-            prog.update()
-            line = f.readline()
-            continue
-
         # Skip self-loops
         if src != dst:
-            src = sort_node(src)
-            dst = sort_node(dst)
+            snapshot = ts // edge_feat_snapshot_size
+            
+            # The whole thing is like 3 GB. Only hold relevant partition in memory
+            # at any given time. Logs are (supposed to be) well-ordered, so this 
+            # should only hit once when logs pass through thresholds
+            if snapshot != ef_idx: 
+                edge_feats = torch.load(f'data/lanl_flow_data/{snapshot}.pt', weights_only=False)
+                ef_idx = snapshot 
 
-            # Needs to be bi-directional otherwise RW doesn't work
-            # bc it's a bipartite graph of U -> C
+            flow_feats = edge_feats.get((src,dst), [0]*7)
+            ef = [get_or_add_e(last_src_usr_type)] + [get_or_add_bucketed(ff) for ff in flow_feats]
+
+            src = get_or_add(src)
+            dst = get_or_add(dst)
+
             csr[src][0].append(dst)
             csr[src][1].append(ts)
-            csr[dst][0].append(src)
-            csr[dst][1].append(ts)
+            csr[src][2].append(ef)
 
         prog.update()
         line = f.readline()
@@ -367,32 +392,44 @@ def full_to_attr_tgraph():
 
     f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
     line = f.readline()
-    prog = tqdm(desc='Test', total=75657132)
-    read_next = False
-
+    prog = tqdm(desc='Test', total=10627036)
+    i = 0
+     
     while line:
+        i += 1
         tokens = line.split(',')
         src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
         label = int(tokens[-1])
 
-        if src.startswith('U') or src.startswith('A'):
-            prog.update()
-            line = f.readline()
-            continue
+        if i % 2: 
+            last_src_usr_type = src[0] # C(omputer), U(ser), A(nonymous)
+            line = f.readline() 
+            continue 
+
+        if ts > FOURTEEN_DAYS: 
+            break 
 
         if src != dst:
-            src = sort_node(src)
-            dst = sort_node(dst)
+            snapshot = ts // edge_feat_snapshot_size
+
+            if snapshot != ef_idx: 
+                edge_feats = torch.load(f'data/lanl_flow_data/{snapshot}.pt', weights_only=False)
+                ef_idx = snapshot 
+
+            flow_feats = edge_feats.get((src,dst), [0]*7)
+            ef = [get_or_add_e(last_src_usr_type)] + [get_or_add_bucketed(ff) for ff in flow_feats]
+
+            src = get_or_add(src)
+            dst = get_or_add(dst)
 
             csr[src][0].append(dst)
             csr[src][1].append(ts)
-            csr[dst][0].append(src)
-            csr[dst][1].append(ts)
+            csr[src][2].append(ef)
 
             # Only store index of anomalous edges to save space
             if label:
                 idx = len(csr[src][0])-1
-                csr[src][2].append(idx)
+                csr[src][3].append(idx)
 
         prog.update()
         line = f.readline()
@@ -402,26 +439,21 @@ def full_to_attr_tgraph():
 
     # Do this at the end so all sections of the graph
     # agree on node mappings
-    x = torch.zeros(len(nid), 2)
-    for k,v in tqdm(nid.items(), desc='Features'):
-        if k.startswith('U'):
-            x[v] = torch.tensor([0, users[k]])
-        elif k.startswith('C'):
-            x[v] = torch.tensor([1, computers[k]])
-        else:
-            x[v] = torch.tensor([2, other[k]])
+    x = torch.zeros(len(nids), 1)
 
-     # String repr of nodes (e.g. C123)
-    names = [k for k in nid.keys()]
+    # String repr of nodes (e.g. C123)
+    names = [k for k in nids.keys()]
 
     idxptr = [0]
     col = []
     ts = []
     is_mal = []
+    efs = []
     for i in tqdm(range(x.size(0))):
-        neighbors,t,label = csr[i]
+        neighbors,t,ef,label = csr[i]
         col += neighbors
         ts += t
+        efs += ef
 
         if label:
             is_mal += [l + idxptr[-1] for l in label]
@@ -435,11 +467,51 @@ def full_to_attr_tgraph():
             idxptr = torch.tensor(idxptr),
             col = torch.tensor(col),
             ts = torch.tensor(ts),
+            edge_attr = torch.tensor(efs),
             is_mal = torch.tensor(is_mal),
             names = names
         ),
-        'data/lanl_tgraph_csr.pt'
+        'data/lanl14attr_tgraph_csr.pt'
     )
+
+def partition_attr_tgraph(): 
+    g = torch.load('data/lanl14attr_tgraph_csr.pt', weights_only=False)
+    
+    torch.manual_seed(0)
+    idxs = torch.randperm(g.col.size(0))
+    tr_end = int(idxs.size(0) * 0.8)
+    va_end = int(idxs.size(0) * 0.9)
+
+    tr = torch.zeros(g.col.size(0), dtype=torch.bool)
+    va = torch.zeros_like(tr)
+    te = torch.zeros_like(tr)
+
+    tr[idxs[:tr_end]] = True
+    va[idxs[tr_end:va_end]] = True
+    te[idxs[va_end:]] = True
+
+    # Mask out anomalies so they're all in test set
+    tr[g.is_mal] = False
+    va[g.is_mal] = False
+    te[g.is_mal] = True
+
+    for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
+        new_ptr = reindex(g.idxptr, mask)
+        data = Data(
+            x = g.x,
+            idxptr = new_ptr,
+            col = g.col[mask],
+            ts = g.ts[mask], 
+            edge_attr = g.edge_attr[mask]
+        )
+
+        if name == 'te':
+            label = torch.zeros(mask.size(0))
+            label[g.is_mal] = 1
+            label = label[mask]
+            data.label = label
+
+        torch.save(data, f'data/lanl14attr_tgraph_{name}.pt')
 
 def partition_tgraph():
     g = torch.load('data/lanl_tgraph_csr.pt', weights_only=False)
@@ -779,4 +851,7 @@ if __name__ == '__main__':
     #tgraph_to_static('va')
     #tgraph_to_static('te')
     #compress('va')
-    filter_14()
+    #filter_14()
+
+    full_to_attr_tgraph()
+    partition_attr_tgraph()
