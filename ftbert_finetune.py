@@ -249,6 +249,7 @@ def parallel_validate(model, tr, va, workers=16, percent=1):
 
 @torch.no_grad()
 def get_metrics(tr,va,te, model):
+    te.to(tr.device)
     te_auc, te_ap = parallel_eval(model, tr, te, workers=WORKERS)
     print('#'*20)
     print(f'TEST SCORES')
@@ -256,12 +257,15 @@ def get_metrics(tr,va,te, model):
     print(f"AUC: {te_auc:0.4f}, AP:  {te_ap:0.4f}")
     print('#'*20)
     print()
+    te.to('cpu')
 
+    va.to(tr.device)
     va_auc, va_ap = parallel_validate(model, tr, va, workers=WORKERS)
     print('#'*20)
     print(f'VAL SCORES')
     print('#'*20)
     print(f"AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
+    va.to('cpu')
 
     return te_auc, te_ap, va_auc, va_ap
 
@@ -380,6 +384,7 @@ if __name__ == '__main__':
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--lanl14', action='store_true')
+    arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--bi', action='store_true')
     args = arg.parse_args()
@@ -391,12 +396,12 @@ if __name__ == '__main__':
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl14attr' if args.lanlflows else 'lanl'
     WORKERS = 16
     COMPRESS = False 
     TRWSampler = RW if args.static else TRW
 
-    edge_features = args.unsw #or args.optc
+    edge_features = args.unsw or args.lanlflows
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -424,7 +429,7 @@ if __name__ == '__main__':
         va = torch.load('data/lanl_tgraph_compressed_va.pt', weights_only=False)
     else:
         va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
-    va = TRWSampler(va, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+    va = TRWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     va.label = torch.zeros_like(va.col)
 
     if DATASET == 'lanl' and COMPRESS: 
@@ -432,7 +437,7 @@ if __name__ == '__main__':
     else: 
         te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
     label = te.label
-    te = TRWSampler(te, device=DEVICE, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
+    te = TRWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
     te.label = label
 
     if DATASET.startswith('lanl'):

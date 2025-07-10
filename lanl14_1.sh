@@ -1,18 +1,18 @@
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 0 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 1 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 2 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 4 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 6 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 8 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 10 --lanl14 --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 16 --lanl14 --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 32 --lanl14 --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 0 --lanl14 --bi --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 1 --lanl14 --bi --static
-#python snapshot_finetune.py --size $1 --device $2 --walk-len 2 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 4 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 6 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 8 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 10 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 16 --lanl14 --bi --static
-python snapshot_finetune.py --size $1 --device $2 --walk-len 32 --lanl14 --bi --static
+python snapshot_finetune.py --device $1 --walk-len 0 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 1 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 2 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 4 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 6 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 8 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 10 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 16 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 32 --lanlflows --static
+python snapshot_finetune.py --device $1 --walk-len 0 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 1 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 2 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 4 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 6 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 8 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 10 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 16 --lanlflows --bi --static
+python snapshot_finetune.py --device $1 --walk-len 32 --lanlflows --bi --static
