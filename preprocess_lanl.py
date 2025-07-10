@@ -474,8 +474,210 @@ def full_to_attr_tgraph():
         'data/lanl14attr_tgraph_csr.pt'
     )
 
-def partition_attr_tgraph(): 
-    g = torch.load('data/lanl14attr_tgraph_csr.pt', weights_only=False)
+def full_to_attr_snapshotgraph():
+    nids = dict()
+    eids = dict()
+    csr = defaultdict(lambda : [[],[],[],[]])
+    edge_feat_snapshot_size = 3600
+
+    def get_or_add(v):
+        if (nid := nids.get(v)) is None:
+            nid = len(nids)
+            nids[v] = nid
+        return nid
+    
+    def get_or_add_e(v): 
+        if (eid := eids.get(v)) is None: 
+            eid = len(eids)
+            eids[v] = eid 
+        return eid 
+    
+    def get_or_add_bucketed(v): 
+        e = int(v)
+        if e < 100:
+            val = f'bkt-{e}'
+        else:
+            val = f'bkt-log(x)={int(log10(e))}'
+
+        return get_or_add_e(val)
+    
+    def get_or_add_frac(v, base=10):
+        v *= 100 
+        v = base * round(v / base)
+        val = f'bkt-0.{v}'
+
+        return get_or_add_e(val)
+
+    usr_idx = {'C': 0, 'U': 1, 'A': 2}
+    [get_or_add_frac(i/100) for i in range(0,110,10)]
+    [get_or_add_bucketed(i) for i in range(100)]
+    
+    f = open(f'{HOME_DIR}/processed/auth_all_tr.txt', 'r')
+    edge_feats = torch.load('data/lanl_flow_data/0.pt', weights_only=False)
+    ef_idx = 0 
+
+    line = f.readline()
+    prog = tqdm(desc='Train', total=1422389)
+    i = 0 
+    last_src_usr_type = None
+
+    edges = defaultdict(lambda : [0,0,0])
+    while line:
+        i += 1 
+        tokens = line.split(',')
+        src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
+        
+        if i % 2: 
+            last_src_usr_type = src[0] # C(omputer), U(ser), A(nonymous)
+            line = f.readline() 
+            continue 
+
+        if ts > FOURTEEN_DAYS: 
+            break 
+
+        # Every snapshot, compress edges into single edge
+        snapshot = ts // edge_feat_snapshot_size
+        if snapshot != ef_idx: 
+            # Compress existing edge features and add to CSR 
+            for (src,dst),utype in edges.items():
+                flow_feats = edge_feats.get((src,dst), [0]*7)
+                
+                # Normalize 
+                tot = sum(utype) 
+                utype = [ut / tot for ut in utype]
+                ef = [get_or_add_frac(ut) for ut in utype] + [get_or_add_bucketed(ff) for ff in flow_feats]
+
+                src = get_or_add(src)
+                dst = get_or_add(dst)
+
+                csr[src][0].append(dst)
+                csr[src][1].append(ef)
+                csr[src][2].append(ef_idx)
+
+            # Load next part of flow features
+            edge_feats = torch.load(f'data/lanl_flow_data/{snapshot}.pt', weights_only=False)
+            ef_idx = snapshot 
+            edges = defaultdict(lambda : [0,0,0])
+            
+
+        # Skip self-loops
+        if src != dst:
+            edges[(src,dst)][usr_idx[last_src_usr_type]] += 1
+
+        prog.update()
+        line = f.readline()
+
+    prog.close()
+    f.close()
+
+    f = open(f'{HOME_DIR}/processed/auth_all_te.txt', 'r')
+    line = f.readline()
+    prog = tqdm(desc='Test', total=10627036)
+    i = 0
+    
+    edges = defaultdict(lambda : [0,0,0,0])
+    while line:
+        i += 1
+        tokens = line.split(',')
+        src = tokens[0]; dst = tokens[1]; ts = int(tokens[2])
+        label = int(tokens[-1])
+
+        if i % 2: 
+            last_src_usr_type = src[0] # C(omputer), U(ser), A(nonymous)
+            line = f.readline() 
+            continue 
+
+        if ts > FOURTEEN_DAYS: 
+            break 
+        
+        # Every snapshot, compress edges into single edge
+        snapshot = ts // edge_feat_snapshot_size
+        if snapshot != ef_idx: 
+            # Compress existing edge features and add to CSR 
+            for (src,dst),utype in edges.items():
+                flow_feats = edge_feats.get((src,dst), [0]*7)
+                
+                # Normalize 
+                tot = sum(utype) 
+                utype_ = [ut / tot for ut in utype[:-1]]
+                ef = [get_or_add_frac(ut) for ut in utype_] + [get_or_add_bucketed(ff) for ff in flow_feats]
+
+                src = get_or_add(src)
+                dst = get_or_add(dst)
+
+                csr[src][0].append(dst)
+                csr[src][1].append(ef)
+                csr[src][2].append(ef_idx)
+                
+                if utype[-1]:
+                    idx = len(csr[src][0])-1
+                    csr[src][3].append(idx)
+
+            # Load next part of flow features
+            edge_feats = torch.load(f'data/lanl_flow_data/{snapshot}.pt', weights_only=False)
+            ef_idx = snapshot 
+            edges = defaultdict(lambda : [0,0,0,0])
+
+        # Skip self-loops
+        if src != dst:
+            # Weird. Some new user type appears only in the test
+            # data. I'm just going to ignore it? 
+            if last_src_usr_type in usr_idx:
+                edges[(src,dst)][usr_idx[last_src_usr_type]] += 1
+            
+            if label: 
+                edges[(src,dst)][-1] = 1
+
+        prog.update()
+        line = f.readline()
+
+    prog.close()
+    f.close()
+
+    # Do this at the end so all sections of the graph
+    # agree on node mappings
+    x = torch.zeros(len(nids), 1)
+
+    # String repr of nodes (e.g. C123)
+    names = [k for k in nids.keys()]
+
+    idxptr = [0]
+    col = []
+    ts = []
+    is_mal = []
+    efs = []
+    for i in tqdm(range(x.size(0))):
+        neighbors,ef,t,label = csr[i]
+        col += neighbors
+        ts += t
+        efs += ef
+
+        if label:
+            is_mal += [l + idxptr[-1] for l in label]
+
+        idxptr.append(len(neighbors) + idxptr[-1])
+        del csr[i]
+
+    torch.save(
+        Data(
+            x = x,
+            idxptr = torch.tensor(idxptr),
+            col = torch.tensor(col),
+            ts = torch.tensor(ts),
+            edge_attr = torch.tensor(efs),
+            is_mal = torch.tensor(is_mal),
+            names = names
+        ),
+        'data/lanl14compressedattr_tgraph_csr.pt'
+    )
+
+def partition_attr_tgraph(compressed=False): 
+    if compressed:
+        fname =  'data/lanl14compressedattr_tgraph'
+    else:
+        fname =  'data/lanl14attr_tgraph'
+    
+    g = torch.load(f'{fname}_csr.pt', weights_only=False)
     
     torch.manual_seed(0)
     idxs = torch.randperm(g.col.size(0))
@@ -511,7 +713,7 @@ def partition_attr_tgraph():
             label = label[mask]
             data.label = label
 
-        torch.save(data, f'data/lanl14attr_tgraph_{name}.pt')
+        torch.save(data, f'{fname}_{name}.pt')
 
 def partition_tgraph():
     g = torch.load('data/lanl_tgraph_csr.pt', weights_only=False)
@@ -853,5 +1055,8 @@ if __name__ == '__main__':
     #compress('va')
     #filter_14()
 
-    full_to_attr_tgraph()
-    partition_attr_tgraph()
+    #full_to_attr_tgraph()
+    #partition_attr_tgraph()
+
+    full_to_attr_snapshotgraph()
+    partition_attr_tgraph(compressed=True)

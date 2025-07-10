@@ -144,6 +144,7 @@ if __name__ == '__main__':
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--fourteen', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
+    arg.add_argument('--lanlcomp', action='store_true')
     arg.add_argument('--delta', type=int, default=-1)
     arg.add_argument('--trw', action='store_true')
     args = arg.parse_args()
@@ -159,15 +160,16 @@ if __name__ == '__main__':
         'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
     }[SIZE]
 
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen else 'lanl14attr' if args.lanlflows else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen \
+        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp else 'lanl'
     MINI_BS = params.MINI_BS
-    edge_features = args.unsw or args.lanlflows
+    edge_features = args.unsw or args.lanlflows or args.lanlcomp
     print(DATASET)
 
     if DATASET == 'optc': 
         MINI_BS = 1035
 
-    if DATASET == 'lanl14attr': 
+    if DATASET == 'lanl14attr' or args.lanlcomp: 
         WALK_LEN = 32 if not args.trw else 64
         MINI_BS = 256
 
@@ -212,7 +214,7 @@ if __name__ == '__main__':
         else: 
             SNAPSHOTS = list(range(14))
 
-        if DATASET == 'lanl14attr': 
+        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr': 
             WORKERS = 16
             # TRW sees about 10x fewer tokens 
             EVAL_EVERY = 10 if args.trw else 1 

@@ -444,7 +444,7 @@ if __name__ == '__main__':
     elif DATASET == 'lanl14attr':
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(14))
-        WORKERS = 16
+        WORKERS = 4
         EVAL_EVERY = 2000
 
     elif DATASET == 'unsw':
