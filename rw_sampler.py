@@ -21,6 +21,12 @@ class TRWSampler():
             self.edge_attr = data.edge_attr.to(device)
             self.num_tokens += self.edge_attr.max() + 1
 
+        # Used for KG LP 
+        if 'filter_ptr' in data.keys(): 
+            self.filter_ptr = data.filter_ptr 
+            self.filter_col = data.filter_col 
+            self.filter_rel = data.filter_rel 
+
         self.edge_features = edge_features
         self.walk_len = walk_len
         self.n_walks = n_walks

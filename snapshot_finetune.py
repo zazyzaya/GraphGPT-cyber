@@ -58,6 +58,7 @@ def sample_uni(tr, src,dst,ts, walk_len, edge_features=None):
         rw = src.unsqueeze(-1)
 
     if edge_features is not None:
+        # Predict next node AND edge features (generally worse performance)
         #mask = torch.tensor([GNNEmbedding.MASK], device=DEVICE).repeat(edge_features.size())
         #rw = torch.cat([rw, mask], dim=1)
         #dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
@@ -385,13 +386,15 @@ if __name__ == '__main__':
     arg.add_argument('--bi', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
+    arg.add_argument('--lanlcomp', action='store_true')
     args = arg.parse_args()
     print(args)
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl14attr' if args.lanlflows else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 \
+        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp else 'lanl'
     WORKERS = 16
     EVAL_EVERY = 1000
 
@@ -399,7 +402,7 @@ if __name__ == '__main__':
 
     sample = sample_bi if args.bi else sample_uni
 
-    edge_features = args.unsw or args.lanlflows
+    edge_features = args.unsw or args.lanlflows or args.lanlcomp
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -446,6 +449,12 @@ if __name__ == '__main__':
         SNAPSHOTS = list(range(14))
         WORKERS = 4
         EVAL_EVERY = 2000
+
+    elif DATASET == 'lanl14compressedattr':
+        DELTA = 60*60*24 # 1 day
+        SNAPSHOTS = list(range(14))
+        WORKERS = 1
+        EVAL_EVERY = 1000
 
     elif DATASET == 'unsw':
         WORKERS = 8
