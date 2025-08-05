@@ -145,6 +145,7 @@ if __name__ == '__main__':
     arg.add_argument('--fourteen', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--lanlcomp', action='store_true')
+    arg.add_argument('--argus', action='store_true')
     arg.add_argument('--delta', type=int, default=-1)
     arg.add_argument('--trw', action='store_true')
     args = arg.parse_args()
@@ -161,17 +162,22 @@ if __name__ == '__main__':
     }[SIZE]
 
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen \
-        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp else 'lanl'
+        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp \
+        else 'lanl14argus' if args.argus else 'lanl'
     MINI_BS = params.MINI_BS
-    edge_features = args.unsw or args.lanlflows or args.lanlcomp
+
+    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus 
     print(DATASET)
 
     if DATASET == 'optc': 
         MINI_BS = 1035
 
-    if DATASET == 'lanl14attr' or args.lanlcomp: 
+    if DATASET == 'lanl14attr' or args.lanlcomp or args.argus: 
         WALK_LEN = 32 if not args.trw else 64
         MINI_BS = 256
+
+    if args.argus and args.trw: 
+        MINI_BS = 128
 
     if args.trw: 
         tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
@@ -204,20 +210,26 @@ if __name__ == '__main__':
     DOWNSAMPLE = False 
 
     if DATASET.startswith('lanl'):
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8           #(originally 10**10)
+        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 9           #(originally 10**10)
         DELTA = 60*60*24 # 1 day
 
         if DATASET == 'lanl': 
             SNAPSHOTS = list(range(59))
             WORKERS = 2
+        elif args.argus: 
+            SNAPSHOTS = tr.ts.unique().tolist()
+
         else: 
             SNAPSHOTS = list(range(14))
 
-        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr': 
+        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
             WORKERS = 16
             # TRW sees about 10x fewer tokens 
             EVAL_EVERY = 10 if args.trw else 1 
+            if args.trw: 
+                WARMUP_T = 10 ** 8 
+                TOTAL_T = 10 ** 9 
        
 
     elif DATASET == 'unsw':
@@ -266,7 +278,8 @@ if __name__ == '__main__':
         num_hidden_layers=   params.L,
         num_attention_heads= params.H // 64,
         intermediate_size=   params.H * 4,
-        num_nodes = g.num_tokens
+        num_nodes = g.num_tokens,
+        max_position_embeddings = 1024 if args.argus else 512
     )
 
     evaluator = Evaluator(

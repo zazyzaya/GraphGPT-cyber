@@ -671,9 +671,13 @@ def full_to_attr_snapshotgraph():
         'data/lanl14compressedattr_tgraph_csr.pt'
     )
 
-def partition_attr_tgraph(compressed=False): 
+def partition_attr_tgraph(compressed=False, argus=False, raw_argus=False): 
     if compressed:
         fname =  'data/lanl14compressedattr_tgraph'
+    elif argus: 
+        fname = 'data/lanl14argus_tgraph'
+    elif raw_argus: 
+        fname = 'data/lanl14argus_tgraph_raw'
     else:
         fname =  'data/lanl14attr_tgraph'
     
@@ -699,13 +703,29 @@ def partition_attr_tgraph(compressed=False):
 
     for mask,name in [(tr, 'tr'), (va, 'va'), (te, 'te')]:
         new_ptr = reindex(g.idxptr, mask)
-        data = Data(
-            x = g.x,
-            idxptr = new_ptr,
-            col = g.col[mask],
-            ts = g.ts[mask], 
-            edge_attr = g.edge_attr[mask]
-        )
+
+        row = torch.arange(g.x.size(0))
+        deg = new_ptr[1:] - new_ptr[:-1]
+        row = row.repeat_interleave(deg)
+
+        if not raw_argus: 
+            data = Data(
+                x = g.x,
+                idxptr = new_ptr,
+                src = row, 
+                col = g.col[mask],
+                ts = g.ts[mask], 
+                edge_attr = g.edge_attr[mask]
+            )
+        else:
+            data = Data(
+                x = g.x,
+                idxptr = new_ptr,
+                src = row, 
+                col = g.col[mask],
+                ts = g.ts[mask], 
+                raw_edge_attr = g.edge_attr[mask]
+            )
 
         if name == 'te':
             label = torch.zeros(mask.size(0))
@@ -1058,5 +1078,8 @@ if __name__ == '__main__':
     #full_to_attr_tgraph()
     #partition_attr_tgraph()
 
-    full_to_attr_snapshotgraph()
-    partition_attr_tgraph(compressed=True)
+    #full_to_attr_snapshotgraph()
+    #partition_attr_tgraph(compressed=True)
+
+    #partition_attr_tgraph(argus=True)
+    partition_attr_tgraph(raw_argus=True)

@@ -187,7 +187,7 @@ class RWBert(GraphBertForMaskedLM):
 
 
 class RWBertFT(torch.nn.Module): 
-    def __init__(self, config, sd, device='cpu'):
+    def __init__(self, config, sd, device='cpu', out_dim=1):
         super().__init__()
         self.fm = RWBert(config)
         self.fm.load_state_dict(sd)
@@ -196,7 +196,7 @@ class RWBertFT(torch.nn.Module):
         self.cls = nn.Sequential(
             torch.nn.Linear(config.hidden_size, config.hidden_size, device=device),
             torch.nn.ReLU(), 
-            torch.nn.Linear(config.hidden_size, 1, device=device)
+            torch.nn.Linear(config.hidden_size, out_dim, device=device)
         )
 
         self.config = config

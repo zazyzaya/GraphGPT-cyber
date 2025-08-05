@@ -14,17 +14,19 @@ Kind of ugly, but wanted to be able to use this in parts of the code other than 
 '''
 
 class Evaluator():
-    def __init__(self, walk_len, num_eval_iters=1, workers=16, eval_bs=2048, downsample=False, device='cpu', dataset='unsw'):
+    def __init__(self, walk_len, num_eval_iters=1, workers=16, eval_bs=2048, downsample=False, device='cpu', dataset='unsw', cls=False):
         self.WALK_LEN = walk_len
         self.NUM_EVAL_ITERS = num_eval_iters
         self.EVAL_BS = eval_bs
         self.DEVICE = device
         self.workers = workers
         self.DATASET = dataset
+        self.cls = cls 
 
         self.downsample = downsample
+        self.sample = self.sample_rw if not self.cls else self.sample_cls
 
-    def sample(self, tr, src,dst,ts, walk_len, edge_features=None):
+    def sample_rw(self, tr, src,dst,ts, walk_len, edge_features=None):
         if walk_len > 1:
             rw = tr.rw(src, reverse=True, trim_missing=False)
         else:
@@ -41,6 +43,24 @@ class Evaluator():
         attn_mask = rw != GNNEmbedding.PAD
 
         return rw, rw==GNNEmbedding.MASK, dst, attn_mask
+    
+    def sample_cls(self, tr, src,dst,ts, walk_len, edge_features): 
+        if walk_len > 0:
+            rw = tr.rw(src, reverse=True, trim_missing=False)
+        else:
+            rw = src.unsqueeze(-1)
+
+        if edge_features is not None:
+            #mask = torch.tensor([GNNEmbedding.MASK], device=DEVICE).repeat(edge_features.size())
+            #rw = torch.cat([rw, mask], dim=1)
+            #dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
+            rw = torch.cat([rw, edge_features], dim=1)
+
+        mask = torch.full((rw.size(0), 1), GNNEmbedding.MASK, device=rw.device)
+        rw = torch.cat([rw,dst.unsqueeze(-1),mask], dim=1)
+        attn_mask = rw != GNNEmbedding.PAD
+
+        return rw, attn_mask, rw == GNNEmbedding.MASK
 
     @torch.no_grad()
     def parallel_eval(self, model, tr: TRWSampler, va: TRWSampler, percent=1):

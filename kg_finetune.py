@@ -16,7 +16,7 @@ from transformers import BertConfig
 from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
-from models.gnn_bert import RWBert, GNNEmbedding
+from models.gnn_bert import RWBert, GNNEmbedding, RWBertFT
 from rw_sampler import TRWSampler as TRW, RWSampler as RW
 from eval_kg import Evaluator
 
@@ -52,7 +52,7 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample_uni(tr, src,dst,ts, walk_len, edge_features=None):
+def sample_rw(tr, src,dst,ts, walk_len, edge_features=None):
     if walk_len > 0:
         rw = tr.rw(src, reverse=True, trim_missing=False)
     else:
@@ -71,26 +71,23 @@ def sample_uni(tr, src,dst,ts, walk_len, edge_features=None):
 
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
 
-def sample_bi(tr, src,dst,ts, walk_len, edge_features=None):
+def sample_cls(tr, src,dst,ts, walk_len, edge_features=None, bidirectional=False):
     if walk_len > 0:
-        src_rw = tr.rw(src, reverse=True, trim_missing=False)
-        dst_rw = tr.rw(dst, reverse=False, trim_missing=False)
-
-        if edge_features is None:
-            rw = torch.cat([src_rw, dst_rw], dim=1)
-            feat_dim = 0
-        else:
-            rw = torch.cat([src_rw, edge_features, dst_rw], dim=1)
-            feat_dim = edge_features.size(1)
-
+        rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
     else:
-        return sample_uni(tr, src,dst,ts, walk_len, edge_features)
+        rw = src.unsqueeze(-1)
 
-    mask_col = src_rw.size(1) + feat_dim
-    rw[:, mask_col] = GNNEmbedding.MASK
+    if edge_features is not None:
+        #mask = torch.tensor([GNNEmbedding.MASK], device=DEVICE).repeat(edge_features.size())
+        #rw = torch.cat([rw, mask], dim=1)
+        #dst = torch.cat([edge_features, dst.unsqueeze(-1)], dim=1).flatten()
+        rw = torch.cat([rw, edge_features], dim=1)
+
+    mask = torch.full((rw.size(0), 1), GNNEmbedding.MASK, device=rw.device)
+    rw = torch.cat([rw,dst.unsqueeze(-1),mask], dim=1)
     attn_mask = rw != GNNEmbedding.PAD
 
-    return rw, rw==GNNEmbedding.MASK, dst, attn_mask
+    return rw, attn_mask, rw == GNNEmbedding.MASK
 
 
 def train(tr,va,te, model: RWBert):
@@ -186,7 +183,7 @@ if __name__ == '__main__':
 
     HOME = f'results/rw/'
 
-    sample = sample_uni
+    sample = sample_rw
 
     edge_features = True
 

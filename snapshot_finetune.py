@@ -383,10 +383,12 @@ if __name__ == '__main__':
     arg.add_argument('--optc', action='store_true')
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--lanl14', action='store_true')
+    arg.add_argument('--argus', action='store_true')
     arg.add_argument('--bi', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--lanlcomp', action='store_true')
+    arg.add_argument('--last', action='store_true')
     args = arg.parse_args()
     print(args)
 
@@ -394,7 +396,8 @@ if __name__ == '__main__':
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 \
-        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp else 'lanl'
+        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp \
+        else 'lanl14argus' if args.argus else 'lanl'
     WORKERS = 16
     EVAL_EVERY = 1000
 
@@ -402,7 +405,7 @@ if __name__ == '__main__':
 
     sample = sample_bi if args.bi else sample_uni
 
-    edge_features = args.unsw or args.lanlflows or args.lanlcomp
+    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -415,11 +418,12 @@ if __name__ == '__main__':
     print(DATASET)
 
     if not args.static:
-        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
+        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
     else:
-        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
+        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
 
-    FNAME = f'{"bi_" if args.bi else ""}snapshot_bert{"_static" if args.static else ""}'
+    FNAME = f'{"bi_" if args.bi else ""}snapshot_bert{"_static" if args.static else ""}{"_last" if args.last else ""}'
+    print(FNAME)
 
     TRWSampler = RW if args.static else TRW
 
@@ -456,6 +460,12 @@ if __name__ == '__main__':
         WORKERS = 1
         EVAL_EVERY = 1000
 
+    elif DATASET == 'lanl14argus': 
+        DELTA = 60*60
+        SNAPSHOTS = tr.ts.unique().tolist()
+        WORKERS = 1 
+        EVAL_EVERY = 1000
+
     elif DATASET == 'unsw':
         WORKERS = 8
         DELTA = 0
@@ -481,7 +491,8 @@ if __name__ == '__main__':
         num_hidden_layers=   params.L,
         num_attention_heads= params.H // 64,
         intermediate_size=   params.H * 4,
-        num_nodes = tr.num_tokens
+        num_nodes = tr.num_tokens,
+        max_position_embeddings = 1024 if args.argus else 512
     )
     model = RWBert(config)
     model.load_state_dict(sd)
