@@ -10,13 +10,13 @@ from sklearn.metrics import \
     average_precision_score as ap_score
 
 EPOCHS = 15 # Validation is no help. Gets decent scores quickly, then overfits
-DEVICE = 0 
+DEVICE = 0
 
 class Euler(nn.Module):
     def __init__(self, in_dim, hidden, emb_dim, device='cpu'):
         super().__init__()
 
-        self.device = device 
+        self.device = device
         self.gcn1 = GCNConv(in_dim, hidden).to(device)
         self.gcn2 = GCNConv(hidden, hidden).to(device)
         self.rnn = nn.GRU(hidden, emb_dim, batch_first=True, device=device)
