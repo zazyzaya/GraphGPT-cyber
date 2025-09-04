@@ -136,16 +136,14 @@ class Argus(nn.Module):
     def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5, pos_samples=99928):
         super().__init__()
 
-        self.c1 = GCNConv(in_dim, h_dim).to(device)
+        self.c1 = GCNConv(in_dim, h_dim, add_self_loops=True).to(device)
         self.relu = nn.ReLU()
-        self.c2 = GCNConv(h_dim, h_dim).to(device)
+        self.c2 = GCNConv(h_dim, h_dim, add_self_loops=True).to(device)
         self.drop = nn.Dropout(0.1)
         self.ac = nn.Tanh()
-        self.c3 = GCNConv(h_dim, h_dim).to(device)
-        nn4 = nn.Sequential(nn.Linear(edge_dim, 8, device=device), nn.ReLU(), # lanl: 3 or 10; optc: 5
-                            nn.Linear(8, h_dim * h_dim, device=device))
-
-        self.c4 = NNConv(h_dim, h_dim, nn4, aggr='mean').to(device)
+        self.c3 = GCNConv(h_dim, h_dim, add_self_loops=True).to(device)
+        self.c4 = GCNConv(h_dim, h_dim, add_self_loops=True).to(device)
+        
         self.rnn = GRU(h_dim, h_dim, z_dim).to(device)
 
         self.decode_mlp = nn.Sequential(
@@ -174,7 +172,7 @@ class Argus(nn.Module):
             z = self.c3(z, ei_self_loops) # Comment out for UNSW
             z = self.relu(z) # Comment out for UNSW
             z = self.drop(z) # Comment out for UNSW
-            z = self.c4(z, ei, edge_attr=ea)
+            z = self.c4(z, ei)
             z = self.ac(z)
 
             zs.append(z)
@@ -314,7 +312,7 @@ def to_snapshots(g, ts=None, add_csr=False, max_ts=float('inf')):
 
 def train(tr,va,te):
     model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE)
-    opt = SOAP(model.parameters(), lr=0.01, mode='adam', weight_decay=0.0)
+    opt = SOAP(model.parameters(), lr=0.001, mode='adam', weight_decay=0.0)
 
     best = (0,0,0)
     best_cheating = (0,0)
@@ -345,7 +343,7 @@ def train(tr,va,te):
         with torch.no_grad():
             model.eval()
             zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
-            pos,neg = model.validate(zs[:42], va.edge_index)
+            pos,neg = model.validate(zs, va.edge_index)
             labels = torch.zeros(pos.size(0)+neg.size(0))
             labels[pos.size(0):] = 1
 
