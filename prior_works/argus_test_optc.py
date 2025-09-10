@@ -133,7 +133,7 @@ class GRU(nn.Module):
         return self.lin(xs), h
 
 class Argus(nn.Module):
-    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5, pos_samples=99928):
+    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5, pos_samples=784665):
         super().__init__()
 
         self.c1 = GCNConv(in_dim, h_dim, add_self_loops=True).to(device)
@@ -142,7 +142,10 @@ class Argus(nn.Module):
         self.drop = nn.Dropout(0.1)
         self.ac = nn.Tanh()
         self.c3 = GCNConv(h_dim, h_dim, add_self_loops=True).to(device)
-        self.c4 = GCNConv(h_dim, h_dim, add_self_loops=True).to(device)
+        nn4 = nn.Sequential(nn.Linear(edge_dim, 8, device=device), nn.ReLU(), # lanl: 3 or 10; optc: 5
+                            nn.Linear(8, h_dim * h_dim, device=device))
+        
+        self.c4 = NNConv(h_dim, h_dim, nn4, aggr='mean').to(device)
         
         self.rnn = GRU(h_dim, h_dim, z_dim).to(device)
 
@@ -172,7 +175,7 @@ class Argus(nn.Module):
             z = self.c3(z, ei_self_loops) # Comment out for UNSW
             z = self.relu(z) # Comment out for UNSW
             z = self.drop(z) # Comment out for UNSW
-            z = self.c4(z, ei)
+            z = self.c4(z, ei, ea) # Even though no edge feats, seems to improve score
             z = self.ac(z)
 
             zs.append(z)
@@ -221,10 +224,11 @@ class Argus(nn.Module):
                 continue
 
             ns = torch.randint(0, zs.size(1), ps.size())
-
+            
+            # Switching pos and neg bc I think the original was backward?
             t_index = torch.arange(0, ps.size(1), dtype=torch.int64, device=self.device).detach()
-            pos_pred = self.decode(ps, zs[i])
-            neg_pred = self.decode(ns, zs[i])
+            neg_pred = self.decode(ps, zs[i])
+            pos_pred = self.decode(ns, zs[i])
 
             tot_loss += self.ap_loss(
                 torch.cat((pos_pred, neg_pred), 0),
@@ -311,12 +315,13 @@ def to_snapshots(g, ts=None, add_csr=False, max_ts=float('inf')):
     return Data(x=x, edge_index=eis, label=y, eas=eas, idxs=idxs, ptrs=ptrs, cnts=cnts)
 
 def train(tr,va,te):
-    model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE)
-    opt = SOAP(model.parameters(), lr=0.001, mode='adam', weight_decay=0.0)
+    pos_samples = sum([tr.edge_index[i].size(1) for i in range(len(tr.edge_index))])
+    model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE, pos_samples=pos_samples)
+    opt = SOAP(model.parameters(), lr=0.01, mode='adam', weight_decay=0.0)
 
     best = (0,0,0)
     best_cheating = (0,0)
-    PATIENCE = 3 # Default for lanl
+    PATIENCE = 5
     no_progress = 0
     for e in range(EPOCHS):
         model.train()
@@ -324,12 +329,12 @@ def train(tr,va,te):
 
         st = time.time()
         print("Fwd", end='', flush=True)
-        zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
+        zs = model.forward(tr.x, tr.edge_index[:161], tr.eas, tr.idxs, tr.ptrs)
         print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
         st = time.time()
         print("Loss", end='', flush=True)
-        loss = model.calc_loss_argus(zs, tr.edge_index)
+        loss = model.calc_loss_argus(zs, tr.edge_index[:161])
         print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
         st = time.time()
@@ -347,7 +352,7 @@ def train(tr,va,te):
             labels = torch.zeros(pos.size(0)+neg.size(0))
             labels[pos.size(0):] = 1
 
-            preds = 1-torch.cat([pos,neg]).numpy()
+            preds = torch.cat([pos,neg]).numpy()
             labels = labels.numpy()
 
             va_auc = auc_score(labels, preds)
@@ -363,7 +368,7 @@ def train(tr,va,te):
                 ).sum(dim=1)
                 preds.append(pred)
 
-            preds = 1-torch.sigmoid(torch.cat(preds)).numpy()
+            preds = torch.sigmoid(torch.cat(preds)).numpy()
             y = torch.cat(te.label).clamp(0,1).numpy()
             cnt = torch.cat(te.cnts).numpy()
 
@@ -423,4 +428,4 @@ if __name__ == '__main__':
     df.loc['mean'] = df.mean()
     df.loc['sem'] = df.sem()
 
-    df.to_csv('argus_results_optc.csv')
+    df.to_csv('argus_results_optc_only_tr_times.csv')

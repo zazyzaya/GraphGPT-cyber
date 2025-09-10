@@ -1,3 +1,4 @@
+from math import ceil
 import pandas as pd 
 import torch 
 from torch import nn 
@@ -10,6 +11,7 @@ WL = 500
 WINDOW = 5 
 N2V_EPOCHS = 25 
 ANOM_EPOCHS = 200 
+DEVICE = 0 
 
 def preprocess(dataset): 
     eis = []
@@ -17,23 +19,23 @@ def preprocess(dataset):
     for split in ['tr', 'va', 'te']: 
         g = torch.load(f'../data/{dataset}_tgraph_{split}.pt')
         ei = torch.stack([g.src, g.col])
-        eis.append(ei)
+        eis.append(ei.to(DEVICE))
 
         if split == 'te': 
             y = g.label
         
         num_nodes = max(ei.max(), num_nodes)
 
-    return eis, y, num_nodes+1
+    return eis, y.to(DEVICE), num_nodes+1
 
 class AnomDetector(nn.Module):
     def __init__(self, z_dim): 
         super().__init__()
 
         self.net = nn.Sequential(
-            nn.Linear(z_dim, z_dim//2), 
+            nn.Linear(z_dim, z_dim//2, device=DEVICE), 
             nn.ReLU(), 
-            nn.Linear(z_dim//2, 1)
+            nn.Linear(z_dim//2, 1, device=DEVICE)
         )
         self.criterion = nn.BCEWithLogitsLoss()
 
@@ -43,9 +45,9 @@ class AnomDetector(nn.Module):
     
     def forward(self, z,ei): 
         pos = self.predict(z,ei)
-        neg = self.predict(z,torch.randint(0,z.size(0),ei.size()))    
+        neg = self.predict(z,torch.randint(0,z.size(0),ei.size(), device=DEVICE))    
         
-        labels = torch.zeros(pos.size(0)*2, 1)
+        labels = torch.zeros(pos.size(0)*2, 1, device=DEVICE)
         labels[pos.size(0):] = 1
         loss = self.criterion(
             torch.cat([pos,neg]),
@@ -55,19 +57,21 @@ class AnomDetector(nn.Module):
         return loss 
     
 def train(tr,va,te,y,num_nodes): 
-    n2v = Node2Vec(tr, EMB_DIM, WL, WINDOW, num_nodes=num_nodes)
+    n2v = Node2Vec(tr, EMB_DIM, WL, WINDOW, num_nodes=num_nodes).to(DEVICE)
     n2v_opt = Adam(n2v.parameters(), lr=0.01)
 
     def validate(model,z,ei):
-        neg = torch.randint(0, ei.max(),ei.size())
+        neg = torch.randint(0, ei.max(),ei.size(), device=DEVICE)
         ei = torch.cat([ei,neg], dim=1)
-        y = torch.zeros(ei.size(1),1)
+        y = torch.zeros(ei.size(1),1).to(DEVICE)
         y[neg.size(1):] = 1
 
         return evaluate(model,z,ei,y)
 
     def evaluate(model,z,ei,y): 
-        pred = model.predict(z,ei)
+        pred = model.predict(z,ei).cpu()
+        y = y.cpu()
+
         auc = auc_score(y,pred)
         ap = ap_score(y,pred)
 
@@ -78,12 +82,17 @@ def train(tr,va,te,y,num_nodes):
     anom_opt = Adam(anom.parameters(), lr=0.01)
 
     print("n2v")
+    MBS = 2048
     for e in range(N2V_EPOCHS): 
         n2v_opt.zero_grad()
-        pos,neg = n2v.sample(torch.arange(tr.max()+1))
-        loss = n2v.loss(pos,neg)
-        print(f'[{e}] Loss: {loss.item()}')
-        loss.backward()
+        
+        batches = torch.randperm(tr.max()+1)
+        for i in range(ceil(batches.size(0) / MBS)): 
+            pos,neg = n2v.sample(batches[i*MBS: (i+1)*MBS])
+            loss = n2v.loss(pos.to(DEVICE),neg.to(DEVICE))
+            print(f'[{e}-{i}] Loss: {loss.item()}')
+            loss.backward()
+        
         n2v_opt.step()
 
     z = n2v(torch.arange(num_nodes)).detach()

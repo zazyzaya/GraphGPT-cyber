@@ -228,8 +228,8 @@ class Argus(nn.Module):
             ns = torch.randint(0, zs.size(1), ps.size())
 
             t_index = torch.arange(0, ps.size(1), dtype=torch.int64, device=self.device).detach()
-            pos_pred = self.decode(ps, zs[i])
-            neg_pred = self.decode(ns, zs[i])
+            neg_pred = self.decode(ps, zs[i])
+            pos_pred = self.decode(ns, zs[i])
 
             tot_loss += self.ap_loss(
                 torch.cat((pos_pred, neg_pred), 0),
@@ -304,7 +304,8 @@ def to_snapshots(g, ts=None, add_csr=False, last_ts=None):
     return Data(x=x, edge_index=eis, label=y, eas=eas, idxs=idxs, ptrs=ptrs)
 
 def train(tr,va,te):
-    model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE)
+    pos_samples = sum([tr.edge_index[i].size(1) for i in range(len(tr.edge_index[:42]))])
+    model = Argus(tr.x.size(0), tr.eas[0].size(1), 128, 64, DEVICE, pos_samples=pos_samples)
     opt = SOAP(model.parameters(), lr=0.01, mode='adam', weight_decay=0.0)
 
     best = (0,0,0)
@@ -340,7 +341,7 @@ def train(tr,va,te):
             labels = torch.zeros(pos.size(0)+neg.size(0))
             labels[pos.size(0):] = 1
 
-            preds = 1-torch.cat([pos,neg]).numpy()
+            preds = torch.cat([pos,neg]).numpy()
             labels = labels.numpy()
 
             va_auc = fast_auc(labels, preds)
@@ -356,7 +357,7 @@ def train(tr,va,te):
                 ).sum(dim=1)
                 preds.append(pred)
 
-            preds = 1-torch.sigmoid(torch.cat(preds)).numpy()
+            preds = torch.sigmoid(torch.cat(preds)).numpy()
             y = torch.cat(te.label).clamp(0,1).numpy()
 
             auc = fast_auc(y, preds)
