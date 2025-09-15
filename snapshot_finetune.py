@@ -340,7 +340,7 @@ def train(tr,va,te, model: RWBert):
     steps = 0
 
     e = 0
-    for e in range(10):
+    for e in range(5):
         for samp in tr.edge_iter():
             if tr.edge_features:
                 src,dst,ts,ef = samp
@@ -368,6 +368,10 @@ def train(tr,va,te, model: RWBert):
                 opt.zero_grad()
                 st = time.time()
 
+            '''
+            Only consider results of full epochs 
+            Speeds up eval time, and has better results 
+            
             if updates and updates % EVAL_EVERY == 0:
                 model.eval()
                 te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
@@ -385,6 +389,7 @@ def train(tr,va,te, model: RWBert):
                 print('#'*20)
                 print(f"VAL:  AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
                 print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
+            '''
 
         model.eval()
         te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)

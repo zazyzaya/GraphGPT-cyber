@@ -47,6 +47,8 @@ def get_stats(files):
         for line in lines:
             if line[1] % 500 == 0:
                 continue
+            if line[0] > 5: 
+                break 
             if line[4] > best_auc[0]:
                 best_auc = (line[4], line[2], line[3])
 
