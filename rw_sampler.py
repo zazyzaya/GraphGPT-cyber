@@ -215,7 +215,7 @@ def find_src(col_idx, idxptr):
 
 
 class RWSampler(TRWSampler):
-    def rw(self, batch, n_walks=1, trim_missing=True, walk_len=None, **kwargs):
+    def rw(self, batch, n_walks=1, trim_missing=True, walk_len=None, reverse=False, **kwargs):
         if walk_len is not None: 
             wl = walk_len
         else: 
@@ -228,8 +228,16 @@ class RWSampler(TRWSampler):
             wl, 1, 1
         )
 
+        if reverse:
+            walks = walks.flip(1)
+            eids = eids.flip(1)
+
         pad = eids == -1
-        walks[:, 1:][pad] = GNNEmbedding.PAD
+        
+        if not reverse:
+            walks[:, 1:][pad] = GNNEmbedding.PAD
+        else: 
+            walks[:, :-1][pad] = GNNEmbedding.PAD
 
         if self.edge_features:
             edge_feats = self.edge_attr[eids] + self.num_nodes
@@ -251,6 +259,8 @@ class RWSampler(TRWSampler):
         if trim_missing:
             walks = walks[:, whole_col]
             walks = walks[whole_row]
+
+        
 
         return walks
         

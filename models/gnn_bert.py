@@ -187,10 +187,13 @@ class RWBert(GraphBertForMaskedLM):
 
 
 class RWBertFT(torch.nn.Module): 
-    def __init__(self, config, sd, device='cpu', out_dim=1):
+    def __init__(self, config, sd, device='cpu', out_dim=1, from_random=False):
         super().__init__()
         self.fm = RWBert(config)
-        self.fm.load_state_dict(sd)
+        
+        if not from_random: 
+            self.fm.load_state_dict(sd)
+            
         self.fm = self.fm.to(device)
 
         self.cls = nn.Sequential(

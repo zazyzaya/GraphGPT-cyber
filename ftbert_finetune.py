@@ -387,6 +387,7 @@ if __name__ == '__main__':
     arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--bi', action='store_true')
+    arg.add_argument('--from-random', action='store_true')
     args = arg.parse_args()
     print(args)
 
@@ -414,13 +415,14 @@ if __name__ == '__main__':
     print(DATASET)
 
     FNAME = 'snapshot_bert'
+    RAND = '' if not args.from_random else 'rand_init_'
 
     if not args.static: 
         sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+        OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
     else: 
         sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
@@ -467,7 +469,7 @@ if __name__ == '__main__':
         intermediate_size=   params.H * 4,
         num_nodes = tr.num_tokens
     )
-    model = RWBertFT(config, sd, device=DEVICE)
+    model = RWBertFT(config, sd, device=DEVICE, from_random=args.from_random)
     #model.bert.requires_grad = False
 
     train(tr,va,te, model)

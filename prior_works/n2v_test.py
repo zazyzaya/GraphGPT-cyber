@@ -138,9 +138,10 @@ def train(tr,va,te,y,num_nodes):
         'te_ap': anom_best[3]
     }
 
-for dataset in ['lanl14argus', 'optc', 'unsw']:
-    ei,y,nodes = preprocess(dataset)
-    df = pd.DataFrame([train(*ei,y,nodes) for _ in range(10)])
-    df.loc['mean'] = df.mean()
-    df.loc['sem'] = df.sem()
-    df.to_csv(f'n2v_results_{dataset}.csv')
+if __name__ == '__main__':
+    for dataset in ['lanl14argus', 'optc', 'unsw']:
+        ei,y,nodes = preprocess(dataset)
+        df = pd.DataFrame([train(*ei,y,nodes) for _ in range(10)])
+        df.loc['mean'] = df.mean()
+        df.loc['sem'] = df.sem()
+        df.to_csv(f'n2v_results_{dataset}.csv')

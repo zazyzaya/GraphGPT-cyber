@@ -91,6 +91,21 @@ def sample_bi(tr, src,dst,ts, walk_len, edge_features=None):
 
     return rw, rw==GNNEmbedding.MASK, dst, attn_mask
 
+def sample_bi_separate(tr, src,dst,ts, walk_len, edge_features=None):
+    if walk_len > 0:
+        src_rw = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
+        dst_rw = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, reverse=False, trim_missing=False)
+    else:
+        return sample_uni(tr, src,dst,ts, walk_len, edge_features)
+
+    mask_col = torch.tensor([[GNNEmbedding.MASK]], device=src_rw.device).repeat(src_rw.size(0),1)
+    src_rw = torch.cat([src_rw, mask_col], dim=1)
+    dst_rw = torch.cat([mask_col, dst_rw], dim=1)
+
+    rw = torch.cat([src_rw, dst_rw])
+    attn_mask = rw != GNNEmbedding.PAD
+    return rw, rw==GNNEmbedding.MASK, torch.cat([dst,src]), attn_mask
+
 @torch.no_grad()
 def parallel_eval(model, tr, te, workers=1):
     preds = np.zeros(te.col.size(0))
@@ -122,6 +137,11 @@ def parallel_eval(model, tr, te, workers=1):
         if ef is not None:
             pred = pred.view(walk.size(0), -1)
             pred = pred.prod(dim=1)
+
+        # Product of P(src,dst | src) P(src,dst | dst)
+        if DIRECTED:
+            src,dst = pred.chunk(2)
+            pred = src * dst 
 
         preds[idx.cpu()] += pred.squeeze().detach().to('cpu').numpy()
         prog.update()
@@ -179,6 +199,11 @@ def parallel_validate(model, tr, va, workers=16, percent=1):
             pred = pred.view(walk.size(0), -1)
             pred = pred.prod(dim=1)
 
+        # Product of P(src,dst | src) P(src,dst | dst)
+        if DIRECTED:
+            src,dst = pred.chunk(2)
+            pred = src * dst 
+
         tns[idx.cpu()] += pred.squeeze().detach().to('cpu').numpy()
         prog.update()
 
@@ -212,6 +237,11 @@ def parallel_validate(model, tr, va, workers=16, percent=1):
         if ef is not None:
             pred = pred.view(walk.size(0), -1)
             pred = pred.prod(dim=1)
+
+        # Product of P(src,dst | src) P(src,dst | dst)
+        if DIRECTED:
+            src,dst = pred.chunk(2)
+            pred = src * dst
 
         tps[b.cpu()] += pred.squeeze().detach().to('cpu').numpy()
         prog.update()
@@ -385,12 +415,14 @@ if __name__ == '__main__':
     arg.add_argument('--lanl14', action='store_true')
     arg.add_argument('--argus', action='store_true')
     arg.add_argument('--bi', action='store_true')
+    arg.add_argument('--directed', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--lanlcomp', action='store_true')
     arg.add_argument('--last', action='store_true')
+    arg.add_argument('--from-random', action='store_true')
     args = arg.parse_args()
-    print(args)
+    print(args) 
 
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
@@ -404,6 +436,13 @@ if __name__ == '__main__':
     HOME = f'results/{"rw" if args.static else "trw"}/'
 
     sample = sample_bi if args.bi else sample_uni
+
+    # Testing out a new sampling strategy 
+    if args.directed: 
+        sample = sample_bi_separate
+        DIRECTED = True 
+    else: 
+        DIRECTED = False 
 
     edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
 
@@ -422,7 +461,10 @@ if __name__ == '__main__':
     else:
         sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
 
-    FNAME = f'{"bi_" if args.bi else ""}snapshot_bert{"_static" if args.static else ""}{"_last" if args.last else ""}'
+    FNAME = (
+        f'{"bi_" if args.bi else "directed_" if args.directed else "rand_init_" if args.from_random else ""}' + 
+        f'snapshot_bert{"_static" if args.static else ""}{"_last" if args.last else ""}'
+    )
     print(FNAME)
 
     TRWSampler = RW if args.static else TRW
@@ -463,8 +505,11 @@ if __name__ == '__main__':
     elif DATASET == 'lanl14argus': 
         DELTA = 60*60
         SNAPSHOTS = tr.ts.unique().tolist()
-        WORKERS = 1 
+        WORKERS = 1
         EVAL_EVERY = 1000
+
+        if WALK_LEN > 8: 
+            EVAL_BS = 512
 
     elif DATASET == 'unsw':
         WORKERS = 8
@@ -495,9 +540,10 @@ if __name__ == '__main__':
         max_position_embeddings = 1024 if args.argus else 512
     )
     model = RWBert(config)
-    model.load_state_dict(sd)
+    
+    if not args.from_random:
+        model.load_state_dict(sd)
+    
     model = model.to(DEVICE)
-    #model.bert.requires_grad = False
-
     train(tr,va,te, model)
 

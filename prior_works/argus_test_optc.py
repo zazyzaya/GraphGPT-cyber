@@ -329,12 +329,12 @@ def train(tr,va,te):
 
         st = time.time()
         print("Fwd", end='', flush=True)
-        zs = model.forward(tr.x, tr.edge_index[:161], tr.eas, tr.idxs, tr.ptrs)
+        zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
         print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
         st = time.time()
         print("Loss", end='', flush=True)
-        loss = model.calc_loss_argus(zs, tr.edge_index[:161])
+        loss = model.calc_loss_argus(zs, tr.edge_index)
         print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
         st = time.time()
@@ -388,7 +388,7 @@ def train(tr,va,te):
             # run, so let's just keep track of the best scores without
             # using the val set (this is data snooping, but even with
             # snooping, it doesn't seem like it will perform well)
-            if auc > best_cheating[0]:
+            if ap > best_cheating[1]:
                 best_cheating = (auc, ap)
 
             if no_progress > PATIENCE:
@@ -428,4 +428,4 @@ if __name__ == '__main__':
     df.loc['mean'] = df.mean()
     df.loc['sem'] = df.sem()
 
-    df.to_csv('argus_results_optc_only_tr_times.csv')
+    df.to_csv('argus_results_fixed_loss_bug.csv')
