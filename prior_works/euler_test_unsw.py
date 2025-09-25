@@ -1,4 +1,5 @@
 import pandas as pd
+import time
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -9,8 +10,9 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
+SPEEDTEST = True 
 EPOCHS = 15 # Validation is no help. Gets decent scores quickly, then overfits
-DEVICE = 0
+DEVICE = 1
 
 class Euler(nn.Module):
     def __init__(self, in_dim, hidden, emb_dim, device='cpu'):
@@ -85,10 +87,26 @@ def train(tr,va,te):
         model.train()
         opt.zero_grad()
 
+        st = time.time() 
         zs = model.forward(tr.x, tr.edge_index)
+        fwd_time = time.time() - st 
+
+        st = time.time()
         loss = calc_loss(zs, tr.edge_index)
+        loss_time = time.time() - st 
+
+        st = time.time()
         loss.backward()
+        bwd_time = time.time() - st 
+        
+        st = time.time()
         opt.step()
+        step_time = time.time() - st 
+
+        if SPEEDTEST: 
+            with open('euler_speedtest.csv', 'a') as f:
+                f.write(f'unsw,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
 
         print(f'[{e}] Loss: {loss.item():0.4f}')
 
@@ -124,9 +142,9 @@ def train(tr,va,te):
     return {'auc': best[1], 'ap': best[2]}
 
 if __name__ == '__main__':
-    tr = torch.load('data/unsw_tgraph_tr.pt', weights_only=False)
-    va = torch.load('data/unsw_tgraph_va.pt', weights_only=False)
-    te = torch.load('data/unsw_tgraph_te.pt', weights_only=False)
+    tr = torch.load('../data/unsw_tgraph_tr_raw.pt', weights_only=False)
+    va = torch.load('../data/unsw_tgraph_va_raw.pt', weights_only=False)
+    te = torch.load('../data/unsw_tgraph_te_raw.pt', weights_only=False)
 
     ts = tr.ts.unique()
 

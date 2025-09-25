@@ -1,5 +1,6 @@
 import os 
 import pandas as pd
+import time 
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -10,8 +11,9 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
+SPEEDTEST = True 
 EPOCHS = 15 # Validation is no help. Gets decent scores quickly, then overfits
-DEVICE = 'cpu'
+DEVICE = 1
 
 class Euler(nn.Module):
     def __init__(self, in_dim, hidden, emb_dim, device='cpu'):
@@ -84,15 +86,37 @@ def train(tr,va,te):
 
     best = (100,0,0)
     for e in range(EPOCHS):
-        model.train()
-        opt.zero_grad()
+        BS=32
+        fwd_time=bwd_time=loss_time=step_time = 0
+        for i in range(len(tr.edge_index) // BS): 
+            st_i = i*BS
+            en_i = (i+1)*BS 
 
-        zs = model.forward(tr.x, tr.edge_index[:42])
-        loss = calc_loss(zs, tr.edge_index[:42])
-        loss.backward()
-        opt.step()
+            model.train()
+            opt.zero_grad()
 
-        print(f'[{e}] Loss: {loss.item():0.4f}')
+            st = time.time() 
+            zs = model.forward(tr.x, tr.edge_index[st_i:en_i])
+            fwd_time += time.time() - st
+
+            st = time.time()
+            loss = calc_loss(zs, tr.edge_index[st_i:en_i])
+            loss_time += time.time() - st
+
+            st = time.time()
+            loss.backward()
+            bwd_time += time.time() - st
+            
+            st = time.time()
+            opt.step()
+            step_time += time.time() - st
+
+            print(f'[{e}] Loss: {loss.item():0.4f}')
+
+        if SPEEDTEST: 
+            with open('euler_speedtest.csv', 'a') as f:
+                f.write(f'LANL,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
 
         with torch.no_grad():
             model.eval()
@@ -121,12 +145,14 @@ def train(tr,va,te):
                 print('*')
             else:
                 print()
+        
+        
 
     print(f"Best: AUC {best[1]:0.4f}, AP {best[2]:0.4f}")
     return {'auc': best[1], 'ap': best[2]}
 
 if __name__ == '__main__':
-    if os.path.exists('tmp/argus_lanl_tr.pt'):
+    if os.path.exists('tmp/euler_lanl_tr.pt'):
         tr = torch.load('tmp/euler_lanl_tr.pt', weights_only=False)
         va = torch.load('tmp/euler_lanl_va.pt', weights_only=False)
         te = torch.load('tmp/euler_lanl_te.pt', weights_only=False)

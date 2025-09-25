@@ -1,5 +1,6 @@
 import os 
 import pandas as pd
+import time 
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -10,8 +11,9 @@ from sklearn.metrics import \
     roc_auc_score as auc_score, \
     average_precision_score as ap_score
 
+SPEEDTEST = True
 EPOCHS = 15 # Validation is no help. Gets decent scores quickly, then overfits
-DEVICE = 0
+DEVICE = 1
 
 class Euler(nn.Module):
     def __init__(self, in_dim, hidden, emb_dim, device='cpu'):
@@ -87,10 +89,33 @@ def train(tr,va,te):
         model.train()
         opt.zero_grad()
 
+        st = time.time() 
         zs = model.forward(tr.x, tr.edge_index)
+        fwd_time = time.time() - st 
+
+        st = time.time()
         loss = calc_loss(zs, tr.edge_index)
+        loss_time = time.time() - st 
+
+        st = time.time()
         loss.backward()
+        bwd_time = time.time() - st 
+        
+        st = time.time()
         opt.step()
+        step_time = time.time() - st 
+
+        if SPEEDTEST: 
+            with open('euler_speedtest.csv', 'a') as f:
+                f.write(f'OpTC,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
+
+        print(f'[{e}] Loss: {loss.item():0.4f}')
+
+        if SPEEDTEST: 
+            with open('argus_speedtest.csv', 'a') as f:
+                f.write(f'LANL,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
 
         print(f'[{e}] Loss: {loss.item():0.4f}')
 

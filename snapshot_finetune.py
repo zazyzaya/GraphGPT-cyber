@@ -19,6 +19,7 @@ from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBert, GNNEmbedding
 from rw_sampler import TRWSampler as TRW, RWSampler as RW
 
+SPEEDTEST = True 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
 EPOCHS = 32    # Epochs
@@ -325,19 +326,31 @@ def train(tr,va,te, model: RWBert):
     warmup_stop = int(updates_per_epoch * WARMUP_E)
     total_steps = int(updates_per_epoch * EPOCHS)
 
-    model.eval()
-    best_te = (te_auc, te_ap, va_auc, va_ap) = get_metrics(tr,va,te, model)
-    best = va_ap
+    if not args.from_random and not SPEEDTEST: 
+        model.eval()
+        best_te = (te_auc, te_ap, va_auc, va_ap) = get_metrics(tr,va,te, model)
+    
+    best = 0 #va_ap
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+    if not SPEEDTEST:
+        with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
-            f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
+            
+            if not args.from_random: 
+                f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 0
     opt.zero_grad()
     st = time.time()
     steps = 0
+
+    times = dict({
+        'samp': [],
+        'fwd': [],
+        'bwd': [],
+        'step': []
+    })
 
     e = 0
     for e in range(5):
@@ -349,14 +362,27 @@ def train(tr,va,te, model: RWBert):
                 ef = None
 
             model.train()
+            
+            log_st = time.time()
             walk,mask,tgt,attn_mask = sample(tr, src,dst,ts, WALK_LEN, edge_features=ef)
+            times['samp'].append(time.time() - log_st)
+
+            log_st = time.time()
             loss = model.modified_fwd(walk, mask, tgt, attn_mask)
+            times['fwd'].append(time.time() - log_st)
+
+            log_st = time.time()
             loss.backward()
+            times['bwd'].append(time.time() - log_st)
 
             steps += 1
             if steps*MINI_BS == BS:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
+                
+                log_st = time.time()
                 opt.step()
+                times['step'].append(time.time() - log_st)
+
                 sched.step()
                 en = time.time()
 
@@ -390,6 +416,14 @@ def train(tr,va,te, model: RWBert):
                 print(f"VAL:  AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
                 print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
             '''
+
+        if SPEEDTEST: 
+            import json 
+            with open(f'latency/latency_{DATASET}_ft.json', 'w+') as f:
+                f.write(
+                    json.dumps(times, indent=1)
+                )
+            exit()
 
         model.eval()
         te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
@@ -461,10 +495,14 @@ if __name__ == '__main__':
 
     print(DATASET)
 
-    if not args.static:
-        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
-    else:
-        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
+    if args.from_random: 
+        sd = None 
+    
+    else: 
+        if not args.static:
+            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
+        else:
+            sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
 
     FNAME = (
         f'{"bi_" if args.bi else "directed_" if args.directed else "rand_init_" if args.from_random else ""}' + 
@@ -514,7 +552,16 @@ if __name__ == '__main__':
         EVAL_EVERY = 1000
 
         if WALK_LEN > 8: 
+            MINI_BS = 256
+            tr.batch_size = MINI_BS
             EVAL_BS = 512
+        if WALK_LEN > 16: 
+            EVAL_BS = 256
+        if WALK_LEN > 32: 
+            EVAL_BS = 128
+            MINI_BS = 128
+            tr.batch_size = 128
+
 
     elif DATASET == 'unsw':
         WORKERS = 8

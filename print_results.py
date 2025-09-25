@@ -49,11 +49,16 @@ def get_stats(files):
                 continue
             if line[0] > 5: 
                 break 
+            
             if line[4] > best_auc[0]:
                 best_auc = (line[4], line[2], line[3])
 
             if line[5] > best_ap[0]:
                 best_ap = (line[5], line[2], line[3])
+
+            # Return last every time 
+            #best_auc = (line[4], line[2], line[3])
+            #best_ap = (line[5], line[2], line[3])
 
         auc_results[size + '_auc'][wl] = best_auc[1]
         ap_results[size + '_auc'][wl] = best_ap[1]

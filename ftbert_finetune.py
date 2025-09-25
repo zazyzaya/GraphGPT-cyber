@@ -20,8 +20,10 @@ from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
 from rw_sampler import TRWSampler as TRW, RWSampler as RW 
 
-from prior_works.argus_test import APLoss
-from prior_works.argus_opt import SOAP
+#from prior_works.argus_test import APLoss
+#from prior_works.argus_opt import SOAP
+
+SPEEDTEST = True 
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
@@ -279,20 +281,28 @@ def train(tr,va,te, model: RWBertFT):
     updates_per_epoch = tr.col.size(0) / BS
     warmup_stop = int(updates_per_epoch * WARMUP_E)
     total_steps = int(updates_per_epoch * EPOCHS)
-
-    model.eval()
-    best_te = (te_auc, te_ap, va_auc, va_ap) = get_metrics(tr,va,te, model)
-    best = va_ap
     sched = Scheduler(opt, warmup_stop, total_steps)
 
-    with open(OUT_F, 'w+') as f:
-            f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
-            f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
+    model.eval()
+    
+    if not SPEEDTEST:
+        best_te = (te_auc, te_ap, va_auc, va_ap) = get_metrics(tr,va,te, model)
+        best = va_ap
+        with open(OUT_F, 'w+') as f:
+                f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
+                f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 0
     opt.zero_grad()
     st = time.time()
     steps = 0
+
+    times = dict({
+        'samp': [],
+        'fwd': [],
+        'bwd': [],
+        'step': []
+    })
 
     e = 0
     for e in range(5):
@@ -320,16 +330,29 @@ def train(tr,va,te, model: RWBertFT):
             labels = labels.unsqueeze(-1)
 
             model.train()
+            log_st = time.time()
             args = sample(tr, src,dst,ts, WALK_LEN, edge_features=ef)
+            times['samp'].append(time.time() - log_st)
+
+            log_st = time.time()
             loss = model(*args, labels)
+            times['fwd'].append(time.time() - log_st)
+
             #preds = model.predict(*args)
             #loss = APLoss(labels.size(0)//2).forward(preds, labels, torch.arange(labels.size(0)//2))
+            
+            log_st = time.time()
             loss.backward()
+            times['bwd'].append(time.time() - log_st)
 
             steps += 1
             if steps*MINI_BS == BS:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
+                
+                log_st = time.time() 
                 opt.step()
+                times['step'].append(time.time() - log_st)
+
                 sched.step()
                 en = time.time()
 
@@ -361,6 +384,15 @@ def train(tr,va,te, model: RWBertFT):
                 print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
             '''
 
+        if SPEEDTEST: 
+            import json 
+            with open(f'latency/latency_{DATASET}_ft.json', 'w+') as f:
+                f.write(
+                    json.dumps(times, indent=1)
+                )
+            exit()
+
+
         model.eval()
         te_auc, te_ap, va_auc, va_ap = get_metrics(tr,va,te, model)
 
@@ -387,6 +419,7 @@ if __name__ == '__main__':
     arg.add_argument('--unsw', action='store_true')
     arg.add_argument('--lanl14', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
+    arg.add_argument('--argus', action='store_true')
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--bi', action='store_true')
     arg.add_argument('--from-random', action='store_true')
@@ -399,12 +432,13 @@ if __name__ == '__main__':
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     WALK_LEN = args.walk_len
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 else 'lanl14attr' if args.lanlflows else 'lanl'
+    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.lanl14 \
+                else 'lanl14attr' if args.lanlflows else 'lanl14argus' if args.argus else 'lanl'
     WORKERS = 16
     COMPRESS = False 
     TRWSampler = RW if args.static else TRW
 
-    edge_features = args.unsw or args.lanlflows
+    edge_features = args.unsw or args.lanlflows or args.argus 
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),

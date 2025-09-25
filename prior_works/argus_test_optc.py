@@ -15,8 +15,9 @@ from sklearn.metrics import \
 
 from argus_opt import SOAP
 
+SPEEDTEST = True 
 EPOCHS = 100
-DEVICE = 'cpu'
+DEVICE = 1
 
 def squared_loss(margin, t): return (margin - t)** 2
 def squared_hinge_loss(margin, t): return torch.max(margin - t, torch.zeros_like(t)) ** 2
@@ -150,7 +151,7 @@ class Argus(nn.Module):
         self.rnn = GRU(h_dim, h_dim, z_dim).to(device)
 
         self.decode_mlp = nn.Sequential(
-            nn.Linear(z_dim, z_dim),
+            nn.Linear(z_dim, z_dim, device=device),
             nn.Softmax(dim=1)
         )
 
@@ -322,28 +323,46 @@ def train(tr,va,te):
     best = (0,0,0)
     best_cheating = (0,0)
     PATIENCE = 5
+    BS = 64
+    print(len(tr.edge_index))
     no_progress = 0
     for e in range(EPOCHS):
-        model.train()
-        opt.zero_grad()
+        fwd_time=bwd_time=loss_time=step_time = 0 
+        for i in range(len(tr.edge_index) // BS): 
+            st_i = i*BS
+            en_i = (i+1)*BS
 
-        st = time.time()
-        print("Fwd", end='', flush=True)
-        zs = model.forward(tr.x, tr.edge_index, tr.eas, tr.idxs, tr.ptrs)
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            model.train()
+            opt.zero_grad()
 
-        st = time.time()
-        print("Loss", end='', flush=True)
-        loss = model.calc_loss_argus(zs, tr.edge_index)
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            st = time.time()
+            print("Fwd", end='', flush=True)
+            zs = model.forward(tr.x, tr.edge_index[st_i:en_i], tr.eas[st_i:en_i], tr.idxs[st_i:en_i], tr.ptrs[st_i:en_i])
+            fwd_time += time.time() - st
+            print(f' ({((fwd_time) / 60):0.2f} mins)')
 
-        st = time.time()
-        print("Bwd", end='', flush=True)
-        loss.backward()
-        opt.step()
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            st = time.time()
+            print("Loss", end='', flush=True)
+            loss = model.calc_loss_argus(zs, tr.edge_index[st_i:en_i])
+            loss_time += time.time() - st
+            print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
-        print(f'[{e}] Loss: {loss.item():0.4f}')
+            st = time.time()
+            print("Bwd", end='', flush=True)
+            loss.backward()
+            bwd_time += time.time() - st
+
+            st = time.time()
+            opt.step()
+            step_time += time.time() - st
+            print(f' ({((time.time() - st) / 60):0.2f} mins)')
+
+            print(f'[{e}] Loss: {loss.item():0.4f}')
+
+        if SPEEDTEST: 
+            with open('argus_speedtest.csv', 'a') as f:
+                f.write(f'OpTC,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
 
         with torch.no_grad():
             model.eval()
@@ -388,7 +407,7 @@ def train(tr,va,te):
             # run, so let's just keep track of the best scores without
             # using the val set (this is data snooping, but even with
             # snooping, it doesn't seem like it will perform well)
-            if ap > best_cheating[1]:
+            if auc > best_cheating[0]:
                 best_cheating = (auc, ap)
 
             if no_progress > PATIENCE:
@@ -428,4 +447,4 @@ if __name__ == '__main__':
     df.loc['mean'] = df.mean()
     df.loc['sem'] = df.sem()
 
-    df.to_csv('argus_results_fixed_loss_bug.csv')
+    df.to_csv('argus_results_optc_only_tr_times.csv')

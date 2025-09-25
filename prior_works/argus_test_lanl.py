@@ -16,8 +16,9 @@ from sklearn.metrics import \
 from argus_opt import SOAP
 from fast_auc import fast_auc, fast_ap
 
+SPEEDTEST = True 
 EPOCHS = 100
-DEVICE = 'cpu'
+DEVICE = 0
 
 def squared_loss(margin, t): return (margin - t)** 2
 def squared_hinge_loss(margin, t): return torch.max(margin - t, torch.zeros_like(t)) ** 2
@@ -134,7 +135,7 @@ class GRU(nn.Module):
         return self.lin(xs), h
 
 class Argus(nn.Module):
-    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5):
+    def __init__(self, in_dim, edge_dim, h_dim, z_dim, device, s=5, pos_samples=315163):
         super().__init__()
 
         self.c1 = GCNConv(in_dim, h_dim).to(device)
@@ -150,14 +151,14 @@ class Argus(nn.Module):
         self.rnn = GRU(h_dim, h_dim, z_dim).to(device)
 
         self.decode_mlp = nn.Sequential(
-            nn.Linear(z_dim, z_dim),
+            nn.Linear(z_dim, z_dim, device=device),
             nn.Softmax(dim=1)
         )
 
         self.device = device
         # UNSW
         # self.ap_loss = APLoss(pos_len=1775035, margin=0.8, gamma=0.1, surrogate_loss='squared', device=device)
-        self.ap_loss = APLoss(pos_len=315163, margin=0.8, gamma=0.01, surrogate_loss='squared', device=device)
+        self.ap_loss = APLoss(pos_len=pos_samples, margin=0.8, gamma=0.01, surrogate_loss='squared', device=device)
         self.s = s
 
 
@@ -203,11 +204,14 @@ class Argus(nn.Module):
 
     def sample_z(self, z, idx,ptr):
         z_agg = []
+        idx = idx.to(self.device)
+        ptr = ptr.to(self.device)
+
         for i in range(z.size(0)):
             n_neighbors = idx[i+1]-idx[i]
 
             if n_neighbors:
-                neighbors = ptr[idx[i] + torch.ones(n_neighbors).multinomial(self.s, replacement=True)]
+                neighbors = ptr[idx[i] + torch.ones(n_neighbors, device=self.device).multinomial(self.s, replacement=True)]
                 z_agg.append((z[neighbors].sum(dim=0) + z[i]) / (self.s+1))
             else:
                 z_agg.append(z[i])
@@ -311,28 +315,46 @@ def train(tr,va,te):
     best = (0,0,0)
     best_cheating = (0,0)
     PATIENCE = 3 # Default for lanl
+    BS = 4 # Largest it can be on GPU without OOM
     no_progress = 0
     for e in range(EPOCHS):
-        model.train()
-        opt.zero_grad()
+        fwd_time=bwd_time=loss_time=step_time = 0 
+        for i in range(len(tr.edge_index) // BS): 
+            st_i = i*BS
+            en_i = (i+1)*BS
 
-        st = time.time()
-        print("Fwd", end='', flush=True)
-        zs = model.forward(tr.x, tr.edge_index[:42], tr.eas[:42], tr.idxs[:42], tr.ptrs[:42])
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            model.train()
+            opt.zero_grad()
 
-        st = time.time()
-        print("Loss", end='', flush=True)
-        loss = model.calc_loss_argus(zs, tr.edge_index)
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            st = time.time()
+            print("Fwd", end='', flush=True)
+            zs = model.forward(tr.x, tr.edge_index[st_i:en_i], tr.eas[st_i:en_i], tr.idxs[st_i:en_i], tr.ptrs[st_i:en_i])
+            fwd_time += time.time() - st
+            print(f' ({((fwd_time) / 60):0.2f} mins)')
 
-        st = time.time()
-        print("Bwd", end='', flush=True)
-        loss.backward()
-        opt.step()
-        print(f' ({((time.time() - st) / 60):0.2f} mins)')
+            st = time.time()
+            print("Loss", end='', flush=True)
+            loss = model.calc_loss_argus(zs, tr.edge_index[st_i:en_i])
+            loss_time += time.time() - st
+            print(f' ({((time.time() - st) / 60):0.2f} mins)')
 
-        print(f'[{e}] Loss: {loss.item():0.4f}')
+            st = time.time()
+            print("Bwd", end='', flush=True)
+            loss.backward()
+            bwd_time += time.time() - st
+
+            st = time.time()
+            opt.step()
+            step_time += time.time() - st
+            print(f' ({((time.time() - st) / 60):0.2f} mins)')
+
+            print(f'[{e}] Loss: {loss.item():0.4f}')
+
+        if SPEEDTEST: 
+            with open('argus_speedtest.csv', 'a') as f:
+                f.write(f'LANL,{fwd_time},{loss_time},{bwd_time},{step_time}\n')
+            exit()
+            
 
         with torch.no_grad():
             model.eval()
@@ -413,7 +435,7 @@ if __name__ == '__main__':
         torch.save(te, 'tmp/argus_lanl_te.pt')
 
 
-
+    torch.set_num_threads(64)
     best = []
     for _ in range(10):
         best.append(train(tr,va,te))

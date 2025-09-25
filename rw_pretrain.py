@@ -37,11 +37,21 @@ class Scheduler(LRScheduler):
                     for group in self.optimizer.param_groups]
 
 def minibatch(mb, model: BERT):
+    st = time.time()
     walks,masks,targets,attn_mask = t.mask(mb)
+    en = time.time()
     token_count = (walks != GNNEmbedding.PAD).sum()
+    samp_time = en-st 
 
+    st = time.time()
     loss = model.modified_fwd(walks, masks, targets, attn_mask)
+    fwd_time = time.time() - st 
+
+    st = time.time()
     loss.backward()
+    back_time = time.time() - st 
+
+    print(f'Samp: {samp_time}, Fwd: {fwd_time}, Bwd: {back_time},')
 
     return loss, token_count
 
@@ -79,7 +89,11 @@ def train(g: RWSampler, model: BERT):
 
             if steps * MINI_BS >= BS:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+                
+                opt_st = time.time()
                 opt.step()
+                opt_en = time.time() - opt_st 
+                print(f'Step: {opt_en}')
                 sched.step()
 
                 processed_tokens += tokens
@@ -222,6 +236,11 @@ if __name__ == '__main__':
 
         else: 
             SNAPSHOTS = list(range(14))
+
+        if SIZE == 'med': 
+            EVAL_BS = 128
+            MINI_BS = 16
+            tr.batch_size = MINI_BS
 
         if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
             WORKERS = 16
