@@ -315,7 +315,8 @@ def train(tr,va,te):
     best = (0,0,0)
     best_cheating = (0,0)
     PATIENCE = 3 # Default for lanl
-    BS = 4 # Largest it can be on GPU without OOM
+    #BS = 4 # Largest it can be on GPU without OOM
+    BS = len(tr.edge_index)
     no_progress = 0
     for e in range(EPOCHS):
         fwd_time=bwd_time=loss_time=step_time = 0 

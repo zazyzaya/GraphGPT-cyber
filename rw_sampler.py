@@ -15,11 +15,15 @@ class TRWSampler():
         self.data = data
 
         self.num_nodes = data.x.size(0)
-        self.num_tokens = data.x.size(0)
+        self.edge_attr = data.edge_attr.to(device)
 
-        if edge_features:
-            self.edge_attr = data.edge_attr.to(device)
-            self.num_tokens += self.edge_attr.max() + 1
+        if 'num_tokens' in data.keys():
+            self.num_tokens = data.num_tokens
+
+        else: 
+            self.num_tokens = data.x.size(0)
+            if edge_features:
+                self.num_tokens += self.edge_attr.max() + 1
 
         # Used for KG LP 
         if 'filter_ptr' in data.keys(): 

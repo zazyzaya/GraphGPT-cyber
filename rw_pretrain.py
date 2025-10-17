@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+import os 
 from random import choice, shuffle
 import time
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from eval_trw import Evaluator
 from models.gnn_bert import RWBert as BERT, GNNEmbedding
 from rw_sampler import RWSampler, TRWSampler
 from tokenizer import RWTokenizer
-from snapshot_finetune import get_metrics
+from utils import reindex
 
 WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
 TOTAL_T = 10 ** 9           #(originally 10**10)
@@ -22,6 +23,8 @@ WALK_LEN = 64
 BS = 1024
 EVAL_BS = 1024
 EVAL_EVERY = 1
+
+SPEEDTEST = False
 
 class Scheduler(LRScheduler):
     def get_lr(self):
@@ -51,8 +54,6 @@ def minibatch(mb, model: BERT):
     loss.backward()
     back_time = time.time() - st 
 
-    print(f'Samp: {samp_time}, Fwd: {fwd_time}, Bwd: {back_time},')
-
     return loss, token_count
 
 def train(g: RWSampler, model: BERT):
@@ -62,13 +63,13 @@ def train(g: RWSampler, model: BERT):
     )
     sched = Scheduler(opt)
 
-    with open(f'{OUT_F}log_{SIZE}.txt', 'w+') as f:
+    with open(f'{LOG_OUT}/{OUT_F}_log_{SIZE}.txt', 'w+') as f:
         pass
 
     #model.eval()
     #te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g,va,te,model)
-    with open(f'{OUT_F}eval_{SIZE}.csv', 'w+') as f:
-        f.write('e,te_auc,te_ap,va_auc,va_ap\n')
+    with open(f'{LOG_OUT}/{OUT_F}_eval_{SIZE}.csv', 'w+') as f:
+        f.write('e,tokens,te_auc,te_ap,va_auc,va_ap\n')
         #f.write(f'0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 1
@@ -93,7 +94,6 @@ def train(g: RWSampler, model: BERT):
                 opt_st = time.time()
                 opt.step()
                 opt_en = time.time() - opt_st 
-                print(f'Step: {opt_en}')
                 sched.step()
 
                 processed_tokens += tokens
@@ -114,7 +114,7 @@ def train(g: RWSampler, model: BERT):
                     )
 
                 # Log update
-                with open(f'{OUT_F}log_{SIZE}.txt', 'a') as f:
+                with open(f'{LOG_OUT}/{OUT_F}_log_{SIZE}.txt', 'a') as f:
                     f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
 
                 print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
@@ -126,6 +126,9 @@ def train(g: RWSampler, model: BERT):
             if processed_tokens >= TOTAL_T:
                 break
 
+        if SPEEDTEST: 
+            exit() 
+            
         e += 1
         with torch.no_grad():
             if e % EVAL_EVERY == 0: 
@@ -136,16 +139,16 @@ def train(g: RWSampler, model: BERT):
                 if va_auc > best:
                     torch.save(
                         model.state_dict(),
-                        f'{OUT_F}_{SIZE}-best.pt'
+                        f'{LOG_OUT}/{OUT_F}_{SIZE}-best.pt'
                     )
                     best = va_auc
 
-                with open(f'{OUT_F}eval_{SIZE}.csv', 'a') as f:
-                    f.write(f'{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
+                with open(f'{LOG_OUT}/{OUT_F}_eval_{SIZE}.csv', 'a') as f:
+                    f.write(f'{updates},{processed_tokens},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
         torch.save(
             model.state_dict(),
-            f'{OUT_F}_{SIZE}.pt'
+            f'{LOG_OUT}/{OUT_F}_{SIZE}.pt'
         )
 
 
@@ -162,10 +165,14 @@ if __name__ == '__main__':
     arg.add_argument('--argus', action='store_true')
     arg.add_argument('--delta', type=int, default=-1)
     arg.add_argument('--trw', action='store_true')
+    arg.add_argument('--tr-size', type=float, default=1.)
+    arg.add_argument('--lanl14argus', action='store_true')
+    arg.add_argument('--log-out', default='.')
     args = arg.parse_args()
 
     print(args)
 
+    LOG_OUT = args.log_out
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
     params = {
@@ -177,7 +184,7 @@ if __name__ == '__main__':
 
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen \
         else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp \
-        else 'lanl14argus' if args.argus else 'lanl'
+        else 'lanl14argus' if (args.argus or args.lanl14argus) else 'lanl'
     MINI_BS = params.MINI_BS
 
     edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus 
@@ -193,8 +200,33 @@ if __name__ == '__main__':
     if args.argus and args.trw: 
         MINI_BS = 128
 
+    # For training set size ablation study
+    tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+    if args.tr_size != 1: 
+        if not os.path.exists(f'subsets/{DATASET}.pt'): 
+            perturb = torch.randperm(tr.col.size(0))
+            torch.save(perturb, f'subsets/{DATASET}.pt')
+        else: 
+            perturb = torch.load(f'subsets/{DATASET}.pt', weights_only=True)
+
+        perturb = perturb[: int(perturb.size(0) * args.tr_size)]
+
+        # Need to keep everything in same order, so use mask instead of index
+        to_keep = torch.zeros(tr.col.size(0), dtype=torch.bool)
+        to_keep[perturb] = 1
+
+        tr.col = tr.col[to_keep]
+        tr.src = tr.src[to_keep]
+        tr.ts = tr.ts[to_keep]
+
+        print("Reindexing...")
+        tr.idxptr = reindex(tr.src, tr.x.size(0))
+        print(f"{tr.col.size(0)} edges")
+
+        if 'edge_attr' in tr.keys(): 
+            tr.edge_attr = tr.edge_attr[to_keep]
+
     if args.trw: 
-        tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
         g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
         va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
@@ -206,7 +238,6 @@ if __name__ == '__main__':
         te = TRWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
         te.label = label
     else: 
-        tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
         g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
         va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
@@ -245,7 +276,7 @@ if __name__ == '__main__':
         if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
             WORKERS = 16
             # TRW sees about 10x fewer tokens 
-            EVAL_EVERY = 10 if args.trw else 1 
+            EVAL_EVERY = 14 
             if args.trw: 
                 WARMUP_T = 10 ** 8 
                 TOTAL_T = 10 ** 9 
@@ -282,7 +313,7 @@ if __name__ == '__main__':
     else:
         print(f"Unrecognized dataset: {DATASET}")
 
-    OUT_F = f'rw_bert_{DATASET}_'
+    OUT_F = f'rw_bert_{DATASET}'
     if args.trw: 
         OUT_F = 't'+OUT_F
 

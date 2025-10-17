@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from copy import deepcopy
+import os 
 import time
 from types import SimpleNamespace
 
@@ -19,11 +20,12 @@ from tqdm import tqdm
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
 from rw_sampler import TRWSampler as TRW, RWSampler as RW 
+from utils import reindex
 
 #from prior_works.argus_test import APLoss
 #from prior_works.argus_opt import SOAP
 
-SPEEDTEST = True 
+SPEEDTEST = False
 
 DEVICE = 0
 WARMUP_E = 9.6  # Epochs
@@ -423,6 +425,8 @@ if __name__ == '__main__':
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--bi', action='store_true')
     arg.add_argument('--from-random', action='store_true')
+    arg.add_argument('--model-fname', default='')
+    arg.add_argument('--tr-size', type=float, default=1.)
     args = arg.parse_args()
     print(args)
 
@@ -436,7 +440,6 @@ if __name__ == '__main__':
                 else 'lanl14attr' if args.lanlflows else 'lanl14argus' if args.argus else 'lanl'
     WORKERS = 16
     COMPRESS = False 
-    TRWSampler = RW if args.static else TRW
 
     edge_features = args.unsw or args.lanlflows or args.argus 
 
@@ -452,16 +455,49 @@ if __name__ == '__main__':
 
     FNAME = 'snapshot_bert'
     RAND = '' if not args.from_random else 'rand_init_'
-
-    if not args.static: 
-        sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
-    else: 
-        sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+    
+    if args.tr_size != 1: 
+        HOME = 'results/training_data_ablation/'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+    if args.tr_size != 1: 
+        HOME = 'results/training_data_ablation/'
+        FNAME += f'_{args.tr_size:0.3f}pct'
+        
+        if not os.path.exists(f'subsets/{DATASET}.pt'): 
+            perturb = torch.randperm(tr.col.size(0))
+        else: 
+            perturb = torch.load(f'subsets/{DATASET}.pt', weights_only=True)
+
+        perturb = perturb[: int(perturb.size(0) * args.tr_size)]
+
+        # Need to keep everything in same order, so use mask instead of index
+        to_keep = torch.zeros(tr.col.size(0), dtype=torch.bool)
+        to_keep[perturb] = 1
+
+        tr.col = tr.col[to_keep]
+        tr.src = tr.src[to_keep]
+        tr.ts = tr.ts[to_keep]
+        tr.idxptr = reindex(tr.src, tr.x.size(0))
+
+        if 'edge_attr' in tr.keys(): 
+            tr.edge_attr = tr.edge_attr[to_keep]
+
+    TRWSampler = RW if args.static else TRW
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
+
+    if args.model_fname: 
+        sd = torch.load(args.model_fname, weights_only=True)
+        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+
+    # Otherwise, it's inferred from args
+    else: 
+        if not args.static: 
+            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
+            OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+        else: 
+            sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
+            OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
 
     if DATASET == 'lanl' and COMPRESS:
         va = torch.load('data/lanl_tgraph_compressed_va.pt', weights_only=False)

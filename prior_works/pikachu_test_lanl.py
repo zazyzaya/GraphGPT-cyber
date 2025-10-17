@@ -1,6 +1,8 @@
 from collections import defaultdict 
 import json 
+from math import ceil 
 import os 
+import time
 
 import pandas as pd 
 import torch 
@@ -27,6 +29,8 @@ ANOM_LR = 0.001
 ANOM_EPOCHS = 10
 ANOM_BATCH_SIZE = 5 
 TRAIN_WIN = 5 # How many snapshots per batch for anomaly detection
+
+SPEEDTEST = True 
 
 def preprocess(g, ts, undirected=False): 
     '''
@@ -76,11 +80,17 @@ def get_node_embeddings(tr):
         opt = Adam(model.parameters(), lr=0.025)
 
         for e in range(1, W2V_EPOCHS+1): 
-            opt.zero_grad()
-            pos, neg = model.sample(torch.arange(tr_t.x.size(0), device=DEVICE), tr_t.to(DEVICE))
-            loss = model.loss(pos, neg)
-            loss.backward()
-            opt.step()
+            BS = tr_t.x.size(0)
+            batches = torch.randperm(tr_t.x.size(0))
+            for batch in range(ceil(tr_t.x.size(0) / BS)):
+                st = batch*BS 
+                en = (batch+1)*BS
+
+                opt.zero_grad()
+                pos, neg = model.sample(batches[st:en].to(DEVICE), tr_t.to(DEVICE))
+                loss = model.loss(pos, neg)
+                loss.backward()
+                opt.step()
         
         with torch.no_grad():
             model.eval()
@@ -192,20 +202,47 @@ def train_anom(z, tr, va, te):
     }
 
 def train_full(tr,va,te): 
+    f = open('pikachu_lanl_times.txt', 'w+')
+
+    st = time.time()
     embs = get_node_embeddings(tr) 
+    en = time.time() 
+    f.write(f'emb,{en-st},{W2V_EPOCHS}\n')
+
+    st = time.time()
     embs = train_ae(embs)
+    en = time.time()
+    f.write(f'ae,{en-st},{AE_EPOCHS}\n')
+
+    st = time.time()
     stats = train_anom(embs, tr,va,te)
+    en = time.time()
+    f.write(f'anom,{en-st},{ANOM_EPOCHS}\n')
+
+    f.close() 
+    if SPEEDTEST: 
+        exit()
 
     print(json.dumps(stats, indent=1))
     return stats 
 
 if __name__ == '__main__': 
-    tr = torch.load('../data/lanl14argus_tgraph_tr.pt', weights_only=False)
-    ts = tr.ts.unique()
+    if not os.path.exists('tmp/pika_lanl_tr.pt'):
+        tr = torch.load('../data/lanl14argus_tgraph_tr.pt', weights_only=False)
+        ts = tr.ts.unique()
 
-    tr = preprocess(tr, ts, undirected=True)
-    va = preprocess(torch.load('../data/lanl14argus_tgraph_va.pt', weights_only=False), ts)
-    te = preprocess(torch.load('../data/lanl14argus_tgraph_te.pt', weights_only=False), ts)
+        tr = preprocess(tr, ts, undirected=True)
+        va = preprocess(torch.load('../data/lanl14argus_tgraph_va.pt', weights_only=False), ts)
+        te = preprocess(torch.load('../data/lanl14argus_tgraph_te.pt', weights_only=False), ts)
+
+        torch.save(tr, 'tmp/pika_lanl_tr.pt')
+        torch.save(va, 'tmp/pika_lanl_va.pt')
+        torch.save(te, 'tmp/pika_lanl_te.pt')
+        
+    else: 
+        tr = torch.load('tmp/pika_lanl_tr.pt', weights_only=False)
+        va = torch.load('tmp/pika_lanl_va.pt', weights_only=False)
+        te = torch.load('tmp/pika_lanl_te.pt', weights_only=False)
 
     stats = [
         train_full(tr,va,te)
