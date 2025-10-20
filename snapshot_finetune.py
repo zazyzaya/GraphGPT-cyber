@@ -92,7 +92,7 @@ def train(tr,va,te, model: RWBert):
     })
 
     e = 0
-    for e in range(5):
+    for e in range(10):
         for samp in tr.edge_iter():
             if tr.edge_features:
                 src,dst,ts,ef = samp

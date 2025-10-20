@@ -493,10 +493,10 @@ if __name__ == '__main__':
     # Otherwise, it's inferred from args
     else: 
         if not args.static: 
-            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}-best.pt', weights_only=True)
+            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}.pt', weights_only=True)
             OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
         else: 
-            sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}-best.pt', weights_only=True)
+            sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
             OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
 
     if DATASET == 'lanl' and COMPRESS:

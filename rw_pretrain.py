@@ -194,8 +194,11 @@ if __name__ == '__main__':
         MINI_BS = 1035
 
     if DATASET == 'lanl14attr' or args.lanlcomp or args.argus: 
-        WALK_LEN = 32 if not args.trw else 64
+        WALK_LEN = 8 # Use shorter WL bc longer feature vector (still comes to abt 64 input)
         MINI_BS = 256
+
+    if DATASET == 'unsw': 
+        WALK_LEN = 16
 
     if args.argus and args.trw: 
         MINI_BS = 128
@@ -275,19 +278,17 @@ if __name__ == '__main__':
 
         if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
             WORKERS = 16
-            # TRW sees about 10x fewer tokens 
             EVAL_EVERY = 14 
-            if args.trw: 
-                WARMUP_T = 10 ** 8 
-                TOTAL_T = 10 ** 9 
        
 
     elif DATASET == 'unsw':
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8           #(originally 10**10)
+        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 9           #(originally 10**10)
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
-        EVAL_EVERY = 10
+        EVAL_EVERY = 500
+        EVAL_BS = 2048
+        WORKERS = 16
 
         if SIZE == 'tiny':
             g.n_walks = 20 # Get up to about 1024 samples per update
@@ -295,15 +296,15 @@ if __name__ == '__main__':
             g.n_walks = 10
 
     elif DATASET == 'optc':
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8
+        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 9
         
         DELTA = 60*60*24 if args.delta == -1 else args.delta
         SNAPSHOTS = (tr.ts // DELTA).unique(sorted=True).tolist()#[:5]
         CHECKPOINT = len(SNAPSHOTS)
         WORKERS = 16
         EVAL_BS = 2048*2
-        EVAL_EVERY = 10 
+        EVAL_EVERY = 500 
 
         if SIZE == 'med': 
             EVAL_BS = 2048
@@ -318,6 +319,7 @@ if __name__ == '__main__':
         OUT_F = 't'+OUT_F
 
     print(OUT_F)
+    print("Walk len", WALK_LEN)
 
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)

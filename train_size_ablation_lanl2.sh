@@ -1,5 +1,5 @@
 ## declare an array variable
-declare -a pcts=("0.9" "0.05" "0.01")
+declare -a pcts=("0.5") # "0.05" "0.01")
 
 ## loop through above array
 for i in "${pcts[@]}"

@@ -4,7 +4,7 @@ import pandas as pd
 AUC = 2
 AP = 3
 
-files = glob.glob(f'results/trw/optc/snapshot-ft_results_snapshot_bert*.txt')
+files = glob.glob(f'results/trw/lanl14argus/snapshot-ft_results_snapshot_bert*.txt')
 
 def get_stats(files): 
     keys = ['tiny', 'mini', 'med', 'baseline']
