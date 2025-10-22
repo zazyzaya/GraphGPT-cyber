@@ -92,7 +92,7 @@ def train(tr,va,te, model: RWBert):
     })
 
     e = 0
-    for e in range(10):
+    for e in range(5):
         for samp in tr.edge_iter():
             if tr.edge_features:
                 src,dst,ts,ef = samp
@@ -195,7 +195,7 @@ if __name__ == '__main__':
     arg.add_argument('--static', action='store_true')
     arg.add_argument('--lanlflows', action='store_true')
     arg.add_argument('--lanlcomp', action='store_true')
-    arg.add_argument('--last', action='store_true')
+    arg.add_argument('--best', action='store_true')
     arg.add_argument('--from-random', action='store_true')
     arg.add_argument('--tr-size', type=float, default=1.)
     arg.add_argument('--model-fname', default='')
@@ -238,13 +238,13 @@ if __name__ == '__main__':
         # Otherwise, it's inferred from args
         else: 
             if not args.static:
-                sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
+                sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
             else:
-                sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if not args.last else ""}.pt', weights_only=True)
+                sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
 
     FNAME = (
         f'{"rand_init_" if args.from_random else ""}' + 
-        f'snapshot_bert{"_static" if args.static else ""}{"_last" if args.last else ""}' + args.tag
+        f'snapshot_bert{"_static" if args.static else ""}{"_best-val" if args.best else ""}' + args.tag
     )
     print(FNAME)
 

@@ -493,7 +493,7 @@ if __name__ == '__main__':
     # Otherwise, it's inferred from args
     else: 
         if not args.static: 
-            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{SIZE}.pt', weights_only=True)
+            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
             OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
         else: 
             sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
@@ -539,10 +539,11 @@ if __name__ == '__main__':
         num_hidden_layers=   params.L,
         num_attention_heads= params.H // 64,
         intermediate_size=   params.H * 4,
-        num_nodes = tr.num_tokens
+        num_nodes = tr.num_tokens,
+        max_position_embeddings = 1024 if args.argus else 512
     )
     model = RWBertFT(config, sd, device=DEVICE, from_random=args.from_random)
-    #model.bert.requires_grad = False
+    model.fm.requires_grad = False
 
     train(tr,va,te, model)
 
