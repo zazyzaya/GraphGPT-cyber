@@ -1,4 +1,6 @@
 from math import ceil
+import time 
+
 import pandas as pd 
 import torch 
 from torch import nn 
@@ -12,6 +14,8 @@ WINDOW = 5
 N2V_EPOCHS = 25 
 ANOM_EPOCHS = 200 
 DEVICE = 0 
+
+SPEED_TEST = True 
 
 def preprocess(dataset): 
     eis = []
@@ -83,6 +87,7 @@ def train(tr,va,te,y,num_nodes):
 
     print("n2v")
     MBS = 2048
+    st = time.time()
     for e in range(N2V_EPOCHS): 
         n2v_opt.zero_grad()
         
@@ -94,17 +99,27 @@ def train(tr,va,te,y,num_nodes):
             loss.backward()
         
         n2v_opt.step()
+    en = time.time()
+    with open('n2v_times.txt', 'a') as f: 
+        f.write(f'Train-n2v,{en-st}\n')
 
     z = n2v(torch.arange(num_nodes)).detach()
     anom_best = (0,0,0,0)
     impatience = 0 
     ea = 0 
+    anom_time = 0 
+    eval_time = 0
+
     while True: 
+        st = time.time()
         anom_opt.zero_grad()
         loss = anom(z,tr)
         print(f'[{ea}] {loss}')
         loss.backward() 
         anom_opt.step() 
+        en = time.time()
+
+        anom_time += en-st 
 
         with torch.no_grad(): 
             t_auc, t_ap = validate(anom,z,tr)
@@ -123,13 +138,19 @@ def train(tr,va,te,y,num_nodes):
                     break  
             print(end) 
 
+            st = time.time()
             auc, ap = evaluate(anom,z,te,y)
             print(f'\tTe:  AUC {auc:0.4f}, AP {ap:0.4f}')
+            en = time.time()
+            eval_time = en-st 
 
             if impatience == 0: 
                 anom_best = (v_auc,v_ap,auc,ap)
 
         ea += 1
+
+    with open('n2v_times.txt', 'a') as f:
+        f.write(f'anom_time,{anom_time}\neval_time,{eval_time}\n')
 
     return {
         'val_auc': anom_best[0],
@@ -141,7 +162,14 @@ def train(tr,va,te,y,num_nodes):
 if __name__ == '__main__':
     for dataset in ['lanl14argus', 'optc', 'unsw']:
         ei,y,nodes = preprocess(dataset)
-        df = pd.DataFrame([train(*ei,y,nodes) for _ in range(10)])
-        df.loc['mean'] = df.mean()
-        df.loc['sem'] = df.sem()
-        df.to_csv(f'n2v_results_{dataset}.csv')
+        
+        with open('n2v_times.txt', 'a') as f:
+            f.write(f'\n{dataset}\n')
+        
+        if SPEED_TEST:
+            train(*ei, y,nodes)
+        else: 
+            df = pd.DataFrame([train(*ei,y,nodes) for _ in range(10)])
+            df.loc['mean'] = df.mean()
+            df.loc['sem'] = df.sem()
+            df.to_csv(f'n2v_results_{dataset}.csv')

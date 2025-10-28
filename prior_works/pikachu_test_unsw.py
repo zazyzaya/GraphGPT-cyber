@@ -1,6 +1,7 @@
 from collections import defaultdict 
 import json 
 import os 
+import time 
 
 import pandas as pd 
 import torch 
@@ -12,7 +13,7 @@ from sklearn.metrics import roc_auc_score as auc_score, average_precision_score 
 
 from pikachu_models import CTDNE, Autoencoder, AnomalyDetector 
 
-DEVICE = 0 
+DEVICE = 1 
 
 # Defaults from Word2Vec and Pikachu code 
 W2V_EPOCHS = 5 
@@ -28,6 +29,8 @@ ANOM_EPOCHS = 10
 ANOM_BATCH_SIZE = 5 
 TRAIN_WIN = 5 # How many snapshots per batch for anomaly detection
 
+SPEEDTEST = True 
+
 def preprocess(g, ts, undirected=False): 
     '''
     Slice input CSR graph into discrete time units
@@ -40,7 +43,7 @@ def preprocess(g, ts, undirected=False):
         dst = g.col[g.ts == t]
 
         if undirected: 
-            src,dst = to_undirected(torch.stack(src,dst))
+            src,dst = to_undirected(torch.stack([src,dst]))
 
         for i in range(src.size(0)): 
             csr[src[i].item()].append(dst[i].item())
@@ -192,12 +195,30 @@ def train_anom(z, tr, va, te):
     }
 
 def train_full(tr,va,te): 
+    f = open('pikachu_unsw_times.txt', 'w+')
+
+    st = time.time()
     embs = get_node_embeddings(tr) 
+    en = time.time() 
+    f.write(f'emb,{en-st},{W2V_EPOCHS}\n')
+
+    st = time.time()
     embs = train_ae(embs)
+    en = time.time()
+    f.write(f'ae,{en-st},{AE_EPOCHS}\n')
+
+    st = time.time()
     stats = train_anom(embs, tr,va,te)
+    en = time.time()
+    f.write(f'anom,{en-st},{ANOM_EPOCHS}\n')
+
+    f.close() 
+    if SPEEDTEST: 
+        exit()
 
     print(json.dumps(stats, indent=1))
     return stats 
+
 
 if __name__ == '__main__': 
     if not os.path.exists('tmp/pikachu_tr.pt'): 

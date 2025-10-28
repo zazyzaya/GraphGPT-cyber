@@ -1,6 +1,6 @@
 from collections import defaultdict
 import json
-import os
+import time 
 
 import pandas as pd
 import torch
@@ -12,7 +12,7 @@ from sklearn.metrics import roc_auc_score as auc_score, average_precision_score 
 
 from pikachu_models import CTDNE, Autoencoder, AnomalyDetector
 
-DEVICE = 'cpu'
+DEVICE = 0
 
 # Defaults from Word2Vec and Pikachu code
 W2V_EPOCHS = 5
@@ -27,6 +27,8 @@ ANOM_LR = 0.001
 ANOM_EPOCHS = 10
 ANOM_BATCH_SIZE = 5
 TRAIN_WIN = 5 # How many snapshots per batch for anomaly detection
+
+SPEEDTEST = True
 
 def preprocess(g, ts, undirected=False):
     '''
@@ -191,13 +193,30 @@ def train_anom(z, tr, va, te):
         'last-ap': te_ap
     }
 
-def train_full(tr,va,te):
-    embs = get_node_embeddings(tr)
+def train_full(tr,va,te): 
+    f = open('pikachu_optc_times.txt', 'w+')
+
+    st = time.time()
+    embs = get_node_embeddings(tr) 
+    en = time.time() 
+    f.write(f'emb,{en-st},{W2V_EPOCHS}\n')
+
+    st = time.time()
     embs = train_ae(embs)
+    en = time.time()
+    f.write(f'ae,{en-st},{AE_EPOCHS}\n')
+
+    st = time.time()
     stats = train_anom(embs, tr,va,te)
+    en = time.time()
+    f.write(f'anom,{en-st},{ANOM_EPOCHS}\n')
+
+    f.close() 
+    if SPEEDTEST: 
+        exit()
 
     print(json.dumps(stats, indent=1))
-    return stats
+    return stats 
 
 if __name__ == '__main__':
     tr = torch.load('../data/optc_tgraph_tr.pt', weights_only=False)

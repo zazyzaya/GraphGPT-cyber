@@ -197,9 +197,6 @@ if __name__ == '__main__':
         WALK_LEN = 8 # Use shorter WL bc longer feature vector (still comes to abt 64 input)
         MINI_BS = 256
 
-    if DATASET == 'unsw': 
-        WALK_LEN = 16
-
     if args.argus and args.trw: 
         MINI_BS = 128
 
@@ -282,8 +279,8 @@ if __name__ == '__main__':
        
 
     elif DATASET == 'unsw':
-        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 9           #(originally 10**10)
+        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 8           #(originally 10**10)
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
         EVAL_EVERY = 500

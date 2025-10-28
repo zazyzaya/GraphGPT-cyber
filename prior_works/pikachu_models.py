@@ -152,13 +152,13 @@ class AnomalyDetector(nn.Module):
         n_u = []
         for i in range(z.size(0)):             
             # Sample u's neighbors (original code uses same sample for every edge)
-            neighbors = col[ptr[i]:ptr[i+1]]
+            neighbors = col[ptr[i]:ptr[i+1]].to(self.device)
             
             # If u has no neighbors, just make sample == z[u]
             if neighbors.size(0) == 0:
                 n_u.append(torch.full((self.s,), i, device=self.device))
             else:      
-                sample_idx = (torch.rand(self.s) * neighbors.size(0)).long()
+                sample_idx = (torch.rand(self.s, device=self.device) * neighbors.size(0)).long()
                 n_u.append(neighbors[sample_idx])
 
         n_u = torch.stack(n_u)
@@ -169,7 +169,7 @@ class AnomalyDetector(nn.Module):
     
     def forward(self, z, edges, idx, col): 
         h_u, _ = self.predict(z, edges, idx, col)
-        loss = self.loss(h_u, edges[1])
+        loss = self.loss(h_u, edges[1].to(self.device))
         return loss 
     
     def get_score(self, z, edges, idx, col): 

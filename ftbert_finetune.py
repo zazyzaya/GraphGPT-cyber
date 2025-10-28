@@ -427,6 +427,7 @@ if __name__ == '__main__':
     arg.add_argument('--from-random', action='store_true')
     arg.add_argument('--model-fname', default='')
     arg.add_argument('--tr-size', type=float, default=1.)
+    arg.add_argument('--tag', default='')
     args = arg.parse_args()
     print(args)
 
@@ -488,16 +489,16 @@ if __name__ == '__main__':
 
     if args.model_fname: 
         sd = torch.load(args.model_fname, weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
 
     # Otherwise, it's inferred from args
     else: 
         if not args.static: 
             sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
-            OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+            OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
         else: 
             sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
-            OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt'
+            OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
 
     if DATASET == 'lanl' and COMPRESS:
         va = torch.load('data/lanl_tgraph_compressed_va.pt', weights_only=False)
