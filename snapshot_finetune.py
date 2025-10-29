@@ -24,8 +24,8 @@ from utils import reindex
 
 SPEEDTEST = False
 DEVICE = 0
-WARMUP_E = 9.6  # Epochs
-EPOCHS = 32    # Epochs
+EPOCHS = 10    # Epochs
+WARMUP_E = EPOCHS / 3.75 # Originally 36 and 9.6
 LR = 3e-4
 
 WALK_LEN = 4
@@ -52,8 +52,14 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (self.last_epoch / self.warmup_stop)
                     for group in self.optimizer.param_groups]
         else:
-            return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
-                    for group in self.optimizer.param_groups]
+            return [
+                group['initial_lr'] * (
+                max(
+                    1e-8, 
+                    1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop))
+                ))
+                for group in self.optimizer.param_groups
+            ]
 
 def train(tr,va,te, model: RWBert):
     opt = AdamW(
@@ -65,7 +71,7 @@ def train(tr,va,te, model: RWBert):
     warmup_stop = int(updates_per_epoch * WARMUP_E)
     total_steps = int(updates_per_epoch * EPOCHS)
 
-    if not args.from_random and not SPEEDTEST: 
+    if not (args.from_random or args.special or SPEEDTEST): 
         model.eval()
         best_te = (te_auc, te_ap, va_auc, va_ap) = evaluator.get_metrics(tr,va,te, model)
     
@@ -76,7 +82,7 @@ def train(tr,va,te, model: RWBert):
         with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
             
-            if not args.from_random: 
+            if not args.from_random or args.special: 
                 f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 0
@@ -92,7 +98,7 @@ def train(tr,va,te, model: RWBert):
     })
 
     e = 0
-    for e in range(5):
+    for e in range(EPOCHS):
         for samp in tr.edge_iter():
             if tr.edge_features:
                 src,dst,ts,ef = samp
@@ -169,18 +175,33 @@ def train(tr,va,te, model: RWBert):
 
         if va_ap > best:
             best = va_ap
-            best_te = (te_auc, te_ap, va_auc, va_ap)
+            best_te = (te_auc, te_ap, va_auc, va_ap, e)
 
         with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
             f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
-        auc, ap, va_auc, va_ap = best_te
+        auc, ap, va_auc, va_ap, _ = best_te
         print('#'*20)
         print(f'BEST SCORES')
         print('#'*20)
         print(f"VAL:  AUC: {va_auc:0.4f}, AP:  {va_ap:0.4f}")
         print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
 
+    return best_te
+
+def special(tr,va,te, model,sd,tag):
+    global EPOCHS, WARMUP_E
+
+    for e in [1,2,3,5,10]:
+        EPOCHS = e 
+        WARMUP_E = EPOCHS / 3.75 
+
+        model.load_state_dict(sd)
+        model.to(DEVICE)
+        auc,ap,_,_,e_best = train(tr,va,te, model)
+
+        with open(f'epoch_ablation-wl{WALK_LEN}{tag}.txt', 'a') as f:
+            f.write(f'{e},{e_best},{auc},{ap}\n')
 
 
 if __name__ == '__main__':
@@ -201,6 +222,7 @@ if __name__ == '__main__':
     arg.add_argument('--model-fname', default='')
     arg.add_argument('--lanl14argus', action='store_true')
     arg.add_argument('--tag', default='')
+    arg.add_argument('--special', action='store_true')
     args = arg.parse_args()
     print(args) 
 
@@ -368,5 +390,9 @@ if __name__ == '__main__':
         model.load_state_dict(sd)
     
     model = model.to(DEVICE)
-    train(tr,va,te, model)
+
+    if args.special: 
+        special(tr,va,te, model,sd,args.tag)
+    else: 
+        train(tr,va,te, model)
 

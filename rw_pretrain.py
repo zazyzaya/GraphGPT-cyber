@@ -81,6 +81,8 @@ def train(g: RWSampler, model: BERT):
 
     e = 0
     while processed_tokens < TOTAL_T:
+        st = time.time()
+
         for i,mb in enumerate(g):
             if mb.size(0) == 0:
                 continue
@@ -118,10 +120,7 @@ def train(g: RWSampler, model: BERT):
                     f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
 
                 print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
-
-
-            st = time.time()
-
+                st = time.time()
 
             if processed_tokens >= TOTAL_T:
                 break
@@ -194,7 +193,7 @@ if __name__ == '__main__':
         MINI_BS = 1035
 
     if DATASET == 'lanl14attr' or args.lanlcomp or args.argus: 
-        WALK_LEN = 8 # Use shorter WL bc longer feature vector (still comes to abt 64 input)
+        WALK_LEN = 8 
         MINI_BS = 256
 
     if args.argus and args.trw: 
@@ -255,8 +254,8 @@ if __name__ == '__main__':
     DOWNSAMPLE = False 
 
     if DATASET.startswith('lanl'):
-        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 9           #(originally 10**10)
+        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 8           #(originally 10**10)
         DELTA = 60*60*24 # 1 day
 
         if DATASET == 'lanl': 
@@ -276,6 +275,7 @@ if __name__ == '__main__':
         if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
             WORKERS = 16
             EVAL_EVERY = 14 
+            BS = 2048
        
 
     elif DATASET == 'unsw':
@@ -293,8 +293,8 @@ if __name__ == '__main__':
             g.n_walks = 10
 
     elif DATASET == 'optc':
-        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 9
+        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 8
         
         DELTA = 60*60*24 if args.delta == -1 else args.delta
         SNAPSHOTS = (tr.ts // DELTA).unique(sorted=True).tolist()#[:5]
