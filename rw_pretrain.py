@@ -167,6 +167,7 @@ if __name__ == '__main__':
     arg.add_argument('--tr-size', type=float, default=1.)
     arg.add_argument('--lanl14argus', action='store_true')
     arg.add_argument('--log-out', default='.')
+    arg.add_argument('--n-tokens', default=0, type=int)
     args = arg.parse_args()
 
     print(args)
@@ -254,8 +255,8 @@ if __name__ == '__main__':
     DOWNSAMPLE = False 
 
     if DATASET.startswith('lanl'):
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8           #(originally 10**10)
+        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
+        TOTAL_T = 10 ** 9           #(originally 10**10)
         DELTA = 60*60*24 # 1 day
 
         if DATASET == 'lanl': 
@@ -314,6 +315,10 @@ if __name__ == '__main__':
     OUT_F = f'rw_bert_{DATASET}'
     if args.trw: 
         OUT_F = 't'+OUT_F
+
+    if args.n_tokens: 
+        TOTAL_T = int(args.n_tokens) * 1e8
+        WARMUP_T = TOTAL_T // 10 
 
     print(OUT_F)
     print("Walk len", WALK_LEN)

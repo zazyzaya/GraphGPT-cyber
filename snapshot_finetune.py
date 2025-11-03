@@ -82,7 +82,7 @@ def train(tr,va,te, model: RWBert):
         with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
             
-            if not args.from_random or args.special: 
+            if not (args.from_random or args.special): 
                 f.write(f'0,0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
     updates = 0
@@ -189,19 +189,22 @@ def train(tr,va,te, model: RWBert):
 
     return best_te
 
-def special(tr,va,te, model,sd,tag):
+def special(tr,va,te, model,sd,tag,out_dir):
     global EPOCHS, WARMUP_E
 
-    for e in [1,2,3,5,10]:
+    with open(f'{out_dir}/epoch_ablation-wl{WALK_LEN}{tag}.txt', 'w+') as f:
+        f.write('e,e_best,auc,ap,v_auc,v_ap\n')
+
+    for e in [1,2,3,5]:
         EPOCHS = e 
         WARMUP_E = EPOCHS / 3.75 
 
         model.load_state_dict(sd)
         model.to(DEVICE)
-        auc,ap,_,_,e_best = train(tr,va,te, model)
+        auc,ap,v_auc,v_ap,e_best = train(tr,va,te, model)
 
-        with open(f'epoch_ablation-wl{WALK_LEN}{tag}.txt', 'a') as f:
-            f.write(f'{e},{e_best},{auc},{ap}\n')
+        with open(f'{out_dir}/epoch_ablation-wl{WALK_LEN}{tag}.txt', 'a') as f:
+            f.write(f'{e},{e_best},{auc},{ap},{v_auc},{v_ap}\n')
 
 
 if __name__ == '__main__':
@@ -223,6 +226,7 @@ if __name__ == '__main__':
     arg.add_argument('--lanl14argus', action='store_true')
     arg.add_argument('--tag', default='')
     arg.add_argument('--special', action='store_true')
+    arg.add_argument('--out-dir', default='')
     args = arg.parse_args()
     print(args) 
 
@@ -336,6 +340,8 @@ if __name__ == '__main__':
         SNAPSHOTS = tr.ts.unique().tolist()
         WORKERS = 1
         EVAL_EVERY = 1000
+        EPOCHS = 1
+        WARMUP_E = EPOCHS / 3.75 
 
         if WALK_LEN > 8: 
             MINI_BS = 256
@@ -392,7 +398,7 @@ if __name__ == '__main__':
     model = model.to(DEVICE)
 
     if args.special: 
-        special(tr,va,te, model,sd,args.tag)
+        special(tr,va,te, model,sd,args.tag,args.out_dir)
     else: 
         train(tr,va,te, model)
 
