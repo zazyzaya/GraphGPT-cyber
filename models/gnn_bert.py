@@ -185,7 +185,6 @@ class RWBert(GraphBertForMaskedLM):
         walks[walks < 0] += GNNEmbedding.OFFSET + self.config.num_nodes
         return super().modified_fwd(walks, masks, targets, attn_mask, return_loss=return_loss, skip_cls=skip_cls)
 
-
 class RWBertFT(torch.nn.Module): 
     def __init__(self, config, sd, device='cpu', out_dim=1, from_random=False):
         super().__init__()

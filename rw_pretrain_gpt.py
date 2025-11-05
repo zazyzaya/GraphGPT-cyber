@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import torch
 from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import LRScheduler
-from transformers import BertConfig
 
-from eval_trw import Evaluator
-from models.gnn_bert import RWBert as BERT, GNNEmbedding
+from eval_trw import CausalEvaluator
+from models.hugging_gpt import GPT 
+from models.gnn_bert import GNNEmbedding
 from rw_sampler import RWSampler, TRWSampler
+from transformers import OpenAIGPTConfig
 from tokenizer import RWTokenizer
 from utils import reindex
 
@@ -39,24 +40,14 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * coeff
                     for group in self.optimizer.param_groups]
 
-def minibatch(mb, model: BERT):
-    st = time.time()
-    walks,masks,targets,attn_mask = t.mask(mb)
-    en = time.time()
+def minibatch(walks, model: GPT):
     token_count = (walks != GNNEmbedding.PAD).sum()
-    samp_time = en-st 
-
-    st = time.time()
-    loss = model.modified_fwd(walks, masks, targets, attn_mask)
-    fwd_time = time.time() - st 
-
-    st = time.time()
+    loss = model(walks)
     loss.backward()
-    back_time = time.time() - st 
 
     return loss, token_count
 
-def train(g: RWSampler, model: BERT):
+def train(g: RWSampler, model: GPT):
     opt = AdamW(
         model.parameters(), lr=3e-4,
         betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1
@@ -283,7 +274,7 @@ if __name__ == '__main__':
         TOTAL_T = 10 ** 8           #(originally 10**10)
         DELTA = 0
         SNAPSHOTS = tr.ts.unique().tolist()
-        EVAL_EVERY = 500
+        EVAL_EVERY = 10
         EVAL_BS = 2048
         WORKERS = 16
 
@@ -301,7 +292,7 @@ if __name__ == '__main__':
         CHECKPOINT = len(SNAPSHOTS)
         WORKERS = 16
         EVAL_BS = 2048*2
-        EVAL_EVERY = 500 
+        EVAL_EVERY = 50 
 
         if SIZE == 'med': 
             EVAL_BS = 2048
@@ -311,7 +302,7 @@ if __name__ == '__main__':
     else:
         print(f"Unrecognized dataset: {DATASET}")
 
-    OUT_F = f'rw_bert_{DATASET}'
+    OUT_F = f'rw_gpt_{DATASET}'
     if args.trw: 
         OUT_F = 't'+OUT_F
 
@@ -325,7 +316,7 @@ if __name__ == '__main__':
     t = RWTokenizer(g.x)
     t.set_mask_rate(0)
 
-    config = BertConfig(
+    config = OpenAIGPTConfig(
         g.num_tokens + GNNEmbedding.OFFSET,
         hidden_size=         params.H,
         num_hidden_layers=   params.L,
@@ -335,11 +326,11 @@ if __name__ == '__main__':
         max_position_embeddings = 1024 if args.argus else 512
     )
 
-    evaluator = Evaluator(
+    evaluator = CausalEvaluator(
         1,
         dataset=DATASET, device=DEVICE,
         delta=DELTA, workers=WORKERS,
         eval_bs=EVAL_BS, downsample=DOWNSAMPLE
     )
-    model = BERT(config).to(DEVICE)
+    model = GPT(config).to(DEVICE)
     train(g,model)
